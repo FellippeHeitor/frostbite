@@ -70,6 +70,17 @@
 '      as seen here: http://www.qbasicnews.com/dav/files/basfile.bas)
 '    - Aquatic creatures now actually enter the water.
 '
+'Intended:
+' - Fix random level features after level 9 (must be randomized only
+'   after a new level is set.
+' - Fix bad guys inverting ice row direction when the hero is almost
+'   falling off (which makes it take much longer for death)
+' - Add a bear.
+' - Add CRABs and CLAMs
+' - Make creatures faster than ice rows.
+' - Add crabs/clams paused movement
+' - Make constant speed increase.
+'
 $RESIZE:SMOOTH
 
 $LET INTERNALBUILD = FALSE
