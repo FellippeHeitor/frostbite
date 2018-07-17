@@ -6,7 +6,7 @@
 '
 ' - Beta 1: November 30th, 2015:
 '    - Screen layout, with aurora and logo on the bottom.
-'    - Ripped sprites from youtube gameplays.
+'    - Ripped hero sprites from youtube gameplays.
 '    - Can move around, jump up and down. Still walks on
 '      water, though.
 '
@@ -20,6 +20,16 @@
 '      the hero will drown.
 '    - Drowning/losing lives.
 '    - Scores for ice blocks the hero steps on.
+'
+' - Beta 3:
+'    - Ripped audio effects. Not required for gameplay, though.
+'    - Added a .MirroredPosition variable to IceRows, which
+'      now allows the hero to step on any ice block he sees
+'      fit.
+'    - When temperature reaches 0 degrees, hero loses a life by
+'      freezing to death.
+'    - Moved drawing routines to subprocedures, to make reading
+'      easier.
 '
 $RESIZE:SMOOTH
 
@@ -44,11 +54,14 @@ CONST HeroStartRow = 95
 CONST HeroHeight = 36
 CONST HeroWidth = 30
 
+CONST InitialTemperature = 45
+
 CONST NewBlockColor = _RGB32(208, 208, 208)
 CONST OldBlockColor = _RGB32(73, 134, 213)
 
 TYPE RowInfo
     Position AS INTEGER
+    MirroredPosition AS INTEGER
     Direction AS INTEGER
     State AS _BYTE 'True when row has been stepped on
 END TYPE
@@ -85,9 +98,20 @@ DIM SHARED AuroraH AS INTEGER
 DIM SHARED BlockRows(1 TO 4) AS INTEGER
 DIM SHARED JustLanded AS _BIT
 DIM SHARED Safe AS _BIT
+DIM SHARED RestoreRowsTimer AS SINGLE
+DIM SHARED TemperatureBlink AS INTEGER
+DIM SHARED HeroFreezingSprite AS LONG
+
+'Sounds
+DIM SHARED JumpSound AS LONG
+DIM SHARED BlockSound AS LONG
+DIM SHARED DrowningSound AS LONG
+
+JumpSound = _SNDOPEN("jump.ogg", "SYNC")
+BlockSound = _SNDOPEN("block.ogg", "SYNC")
+DrowningSound = _SNDOPEN("drowning.ogg", "SYNC")
 
 DIM i AS LONG
-DIM k AS INTEGER
 DIM SpriteSheet AS LONG
 
 GameScreen = _NEWIMAGE(400, 300, 32)
@@ -122,7 +146,7 @@ END IF
 
 _DEST GameScreen
 
-Temperature = 45
+Temperature = InitialTemperature
 Lives = 3
 Level = 1
 LevelSpeed = 1
@@ -176,183 +200,18 @@ ON TIMER(FramesTimer, .1) UpdateFrames
 TIMER(FramesTimer) ON
 
 RANDOMIZE TIMER
-DO: _LIMIT 25
-    LINE (0, 0)-STEP(_WIDTH, GroundH), _RGB32(192, 192, 192), BF 'Ground
-    LINE (0, 0)-STEP(_WIDTH, SkyH), _RGB32(37, 54, 189), BF 'Sky
-    LINE (0, GroundH - 2)-STEP(_WIDTH, 3), _RGB32(0, 0, 0), BF 'Black separator
-    LINE (0, GroundH + 2)-STEP(_WIDTH, WaterH), _RGB32(0, 27, 141), BF 'Water
-    _PUTIMAGE (0, SkyH - AuroraH), ThisAurora, GameScreen
-    LINE (0, _HEIGHT - CreditsBarH)-STEP(_WIDTH, CreditsBarH), _RGB32(0, 0, 0), BF 'Credits bar
-    _PUTIMAGE (0, _HEIGHT - CreditsBarH), CreditsIMG, GameScreen, (0, CreditY)-STEP(_WIDTH(CreditsIMG), CreditsBarH)
 
-    COLOR _RGB32(126, 148, 254), _RGBA32(0, 0, 0, 0)
-    _PRINTSTRING (72 - (LEN(TRIM$(Score)) * _FONTWIDTH), 2), TRIM$(Score)
-    _PRINTSTRING (40 - (LEN(TRIM$(Temperature)) * _FONTWIDTH), 14), TRIM$(Temperature) + CHR$(248)
-    _PRINTSTRING (72 - (LEN(TRIM$(Lives)) * _FONTWIDTH), 14), TRIM$(Lives)
-
-    'crd$ = "IceRow(1).Pos=" + TRIM$(IceRow(1).Position)
-    '_PRINTSTRING (_WIDTH - (LEN(crd$) * _FONTWIDTH), 14), crd$
-
-    'Ice blocks:
-    FOR i = 1 TO 4
-        IF NOT IceRow(i).State THEN ThisRowColor = NewBlockColor ELSE ThisRowColor = OldBlockColor
-        SELECT CASE BlockType
-            CASE SINGLEBLOCK
-                RowWidth = HeroWidth * 9
-
-                IF InGame AND Hero.Action <> DROWNING THEN
-                    IceRow(i).Position = IceRow(i).Position + LevelSpeed * IceRow(i).Direction
-                    IF IceRow(i).Direction = MOVINGRIGHT AND IceRow(i).Position > _WIDTH(GameScreen) THEN IceRow(i).Position = 0
-                    IF IceRow(i).Direction = MOVINGLEFT AND IceRow(i).Position < -RowWidth THEN IceRow(i).Position = _WIDTH(GameScreen) - RowWidth
-                END IF
-
-                LINE (IceRow(i).Position, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                LINE (IceRow(i).Position + HeroWidth * 3.5, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                LINE (IceRow(i).Position + HeroWidth * 7, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                IF IceRow(i).Direction = MOVINGLEFT THEN
-                    IF IceRow(i).Position < 0 THEN
-                        LINE (_WIDTH(GameScreen) + IceRow(i).Position, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                        LINE (_WIDTH(GameScreen) + IceRow(i).Position + HeroWidth * 3.5, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                        LINE (_WIDTH(GameScreen) + IceRow(i).Position + HeroWidth * 7, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                    END IF
-                ELSE
-                    IF IceRow(i).Position + HeroWidth * 7 + HeroWidth * 2 > _WIDTH(GameScreen) THEN
-                        LINE (-_WIDTH(GameScreen) + IceRow(i).Position, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                        LINE (-_WIDTH(GameScreen) + IceRow(i).Position + HeroWidth * 3.5, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                        LINE (-_WIDTH(GameScreen) + IceRow(i).Position + HeroWidth * 7, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
-                    END IF
-                END IF
-            CASE DOUBLEBLOCK
-            CASE MOVINGBLOCK
-        END SELECT
-    NEXT i
-
-    'Hero:
-    IF InGame THEN
-        Hero.X = Hero.X + Hero.Direction * 3
-        IF Hero.CurrentRow > 0 AND Hero.Action <> DROWNING THEN
-            Hero.X = Hero.X + IceRow(Hero.CurrentRow).Direction * LevelSpeed
-        END IF
-
-        SELECT CASE Hero.Action
-            CASE JUMPINGUP
-                IF Hero.CurrentRow = 0 THEN Hero.Action = WALKING ELSE AnimationStep = AnimationStep + 1
-                SELECT CASE AnimationStep
-                    CASE 1 TO 6
-                        Hero.Y = Hero.Y - 8
-                        Hero.Frame = 3
-                    CASE 7 TO 9
-                        Hero.Y = Hero.Y + 3
-                        Hero.Frame = 1
-                    CASE 10
-                        Hero.CurrentRow = Hero.CurrentRow - 1
-                        JustLanded = True
-                        Hero.Action = STOPPED: Hero.Direction = Hero.Action
-                END SELECT
-            CASE JUMPINGDOWN
-                IF Hero.CurrentRow = 4 THEN Hero.Action = WALKING ELSE AnimationStep = AnimationStep + 1
-                SELECT CASE AnimationStep
-                    CASE 1 TO 3
-                        Hero.Y = Hero.Y - 3
-                        Hero.Frame = 3
-                    CASE 4 TO 9
-                        Hero.Y = Hero.Y + 8
-                        Hero.Frame = 1
-                    CASE 10
-                        Hero.CurrentRow = Hero.CurrentRow + 1
-                        JustLanded = True
-                        Hero.Action = STOPPED: Hero.Direction = Hero.Action
-                END SELECT
-            CASE DROWNING
-                AnimationStep = AnimationStep + 1
-                SELECT CASE AnimationStep
-                    CASE 1 TO 5, 11 TO 15, 21 TO 25
-                        _PUTIMAGE (Hero.X, Hero.Y - HeroHeight + AnimationStep)-STEP(HeroWidth, HeroHeight - AnimationStep), HeroSprites(Hero.Frame), GameScreen, (0, 0)-(HeroWidth, HeroHeight - AnimationStep)
-                    CASE 6 TO 10, 16 TO 20, 26 TO 29
-                        _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight + AnimationStep)-STEP(-HeroWidth, HeroHeight - AnimationStep), HeroSprites(Hero.Frame), GameScreen, (0, 0)-(HeroWidth, HeroHeight - AnimationStep)
-                    CASE 30
-                        IF Lives = 0 THEN
-                            GameOver = True
-                        ELSE
-                            Hero.CurrentRow = 0
-                            Hero.X = 100
-                            Hero.Y = HeroStartRow
-                            Hero.Direction = STOPPED
-                            Hero.Face = MOVINGRIGHT
-                            Hero.Action = STOPPED
-                            Hero.Frame = 1
-                        END IF
-                END SELECT
-            CASE STOPPED
-                Hero.Frame = 1
-        END SELECT
-
-        IF Hero.X + HeroWidth > _WIDTH THEN Hero.X = _WIDTH - HeroWidth
-        IF Hero.X < 0 THEN Hero.X = 0
-    END IF
-
-    IF Hero.Action <> DROWNING THEN
-        SELECT CASE Hero.Face
-            CASE MOVINGRIGHT
-                _PUTIMAGE (Hero.X, Hero.Y - HeroHeight), HeroSprites(Hero.Frame), GameScreen
-            CASE MOVINGLEFT
-                _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight)-STEP(-HeroWidth, HeroHeight), HeroSprites(Hero.Frame), GameScreen
-        END SELECT
-    END IF
-
-    'Check to see if the hero landed safely:
-    IF Hero.CurrentRow > 0 THEN
-        SELECT CASE BlockType
-            CASE SINGLEBLOCK
-                IF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 2 THEN
-                    'Safe on the first block
-                    Safe = True
-                ELSEIF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position + HeroWidth * 3.5 AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 3.5 + HeroWidth * 2 THEN
-                    'Safe on the second block
-                    Safe = True
-                ELSEIF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position + HeroWidth * 7 AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 7 + HeroWidth * 2 THEN
-                    'Safe on the third block
-                    Safe = True
-                ELSE
-                    'Drowned
-                    IF Hero.Action <> DROWNING THEN
-                        BEEP
-                        Hero.Frame = 4
-                        Hero.Action = DROWNING
-                        Hero.Direction = 0
-                        Lives = Lives - 1
-                        AnimationStep = 0
-                    END IF
-                END IF
-            CASE DOUBLEBLOCK
-            CASE MOVINGBLOCK
-        END SELECT
-        IF Safe THEN
-            Safe = False
-            IF IceRow(Hero.CurrentRow).State = False AND JustLanded THEN
-                JustLanded = False
-                IceRow(Hero.CurrentRow).State = True
-                Score = Score + Level * 10
-            END IF
-        END IF
-    END IF
-
-    IF IceRow(1).State AND IceRow(2).State AND IceRow(3).State AND IceRow(4).State AND NOT IglooFinished THEN
-        FOR i = 1 TO 4
-            IceRow(i).State = False
-        NEXT i
-    END IF
+'Main game loop: --------------------------------------------------------------
+DO: _LIMIT 24 'Feeling cinematic.
+    DrawScenery
+    MoveIceBlocks
+    MoveHero
+    CheckLanding
 
     UpdateScreen
 
-    k = _KEYHIT
-    IF k = 13 THEN InGame = True: TIMER(TempTimer) ON
-    IF k = 27 THEN EXIT DO
-    IF k = 32 AND Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) AND InGame THEN
-        IF IceRow(Hero.CurrentRow).Direction = MOVINGRIGHT THEN IceRow(Hero.CurrentRow).Direction = MOVINGLEFT ELSE IceRow(Hero.CurrentRow).Direction = MOVINGRIGHT
-    END IF
-
     ReadKeyboard
+    '_DELAY .035
 LOOP UNTIL GameOver
 END
 
@@ -371,17 +230,278 @@ DATA 134,173,212,251
 '------------------------------------------------------------------------------
 'Subprocedures start here:
 '------------------------------------------------------------------------------
+SUB DrawScenery
+LINE (0, 0)-STEP(_WIDTH, GroundH), _RGB32(192, 192, 192), BF 'Ground
+LINE (0, 0)-STEP(_WIDTH, SkyH), _RGB32(37, 54, 189), BF 'Sky
+LINE (0, GroundH - 2)-STEP(_WIDTH, 3), _RGB32(0, 0, 0), BF 'Black separator
+LINE (0, GroundH + 2)-STEP(_WIDTH, WaterH), _RGB32(0, 27, 141), BF 'Water
+_PUTIMAGE (0, SkyH - AuroraH), ThisAurora, GameScreen
+LINE (0, _HEIGHT - CreditsBarH)-STEP(_WIDTH, CreditsBarH), _RGB32(0, 0, 0), BF 'Credits bar
+_PUTIMAGE (0, _HEIGHT - CreditsBarH), CreditsIMG, GameScreen, (0, CreditY)-STEP(_WIDTH(CreditsIMG), CreditsBarH)
+
+COLOR _RGB32(126, 148, 254), _RGBA32(0, 0, 0, 0)
+_PRINTSTRING (72 - (LEN(TRIM$(Score)) * _FONTWIDTH), 2), TRIM$(Score)
+SELECT CASE Temperature
+    CASE 0 TO 5
+        TemperatureBlink = TemperatureBlink + 1
+        IF INT(TemperatureBlink / 2) <> TemperatureBlink / 2 THEN
+            COLOR _RGBA32(0, 0, 0, 0), _RGBA32(0, 0, 0, 0)
+        END IF
+    CASE ELSE
+        TemperatureBlink = 0
+END SELECT
+_PRINTSTRING (72 - (LEN(TRIM$(Lives)) * _FONTWIDTH), 14), TRIM$(Lives)
+_PRINTSTRING (40 - (LEN(TRIM$(Temperature)) * _FONTWIDTH), 14), TRIM$(Temperature) + CHR$(248)
+
+'For debugging/testing purposes:
+'crd$ = "Hero.X=" + TRIM$(Hero.X) + " Hero.Y=" + TRIM$(Hero.Y)
+'_PRINTSTRING (_WIDTH - (LEN(crd$) * _FONTWIDTH), 14), crd$
+END SUB
+
+'------------------------------------------------------------------------------
+SUB MoveIceBlocks
+'Ice blocks:
+FOR i = 1 TO 4
+    IF NOT IceRow(i).State THEN ThisRowColor = NewBlockColor ELSE ThisRowColor = OldBlockColor
+    SELECT CASE BlockType
+        CASE SINGLEBLOCK
+            RowWidth = HeroWidth * 9
+
+            IF InGame AND Hero.Action <> DROWNING AND Hero.Action <> FREEZING THEN
+                IceRow(i).Position = IceRow(i).Position + LevelSpeed * IceRow(i).Direction
+                IF IceRow(i).Direction = MOVINGRIGHT THEN
+                    IF IceRow(i).Position >= _WIDTH(GameScreen) THEN
+                        IceRow(i).Position = 0
+                        IceRow(i).MirroredPosition = 0
+                    END IF
+                END IF
+                IF IceRow(i).Direction = MOVINGLEFT THEN
+                    IF IceRow(i).Position < -RowWidth THEN
+                        IceRow(i).Position = _WIDTH(GameScreen) - 1 - RowWidth
+                        IceRow(i).MirroredPosition = 0
+                    END IF
+                END IF
+            END IF
+
+            'Draw normal blocks
+            LINE (IceRow(i).Position, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+            LINE (IceRow(i).Position + HeroWidth * 3.5, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+            LINE (IceRow(i).Position + HeroWidth * 7, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+
+            IF IceRow(i).Direction = MOVINGLEFT THEN
+                IF IceRow(i).Position < 0 THEN
+                    IceRow(i).MirroredPosition = _WIDTH(GameScreen) + IceRow(i).Position
+                END IF
+            ELSE
+                IF IceRow(i).Position + HeroWidth * 7 + HeroWidth * 2 > _WIDTH(GameScreen) THEN
+                    IceRow(i).MirroredPosition = -_WIDTH(GameScreen) + IceRow(i).Position
+                END IF
+            END IF
+
+            'Draw mirrored blocks
+            IF IceRow(i).MirroredPosition THEN
+                LINE (IceRow(i).MirroredPosition, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+                LINE (IceRow(i).MirroredPosition + HeroWidth * 3.5, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+                LINE (IceRow(i).MirroredPosition + HeroWidth * 7, BlockRows(i))-STEP(HeroWidth * 2, 0), ThisRowColor
+            END IF
+        CASE DOUBLEBLOCK
+        CASE MOVINGBLOCK
+    END SELECT
+NEXT i
+END SUB
+
+'------------------------------------------------------------------------------
+SUB MoveHero
+'Hero:
+IF InGame THEN
+    Hero.X = Hero.X + Hero.Direction * 3
+    IF Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
+        Hero.X = Hero.X + IceRow(Hero.CurrentRow).Direction * LevelSpeed
+    END IF
+
+    SELECT CASE Hero.Action
+        CASE JUMPINGUP
+            IF Hero.CurrentRow = 0 THEN Hero.Action = WALKING ELSE AnimationStep = AnimationStep + 1
+            SELECT CASE AnimationStep
+                CASE 1 TO 6
+                    Hero.Y = Hero.Y - 8
+                    Hero.Frame = 3
+                CASE 7 TO 9
+                CASE 10 TO 12
+                    Hero.Y = Hero.Y + 3
+                    Hero.Frame = 1
+                CASE 13
+                    Hero.CurrentRow = Hero.CurrentRow - 1
+                    JustLanded = True
+                    Hero.Action = STOPPED: Hero.Direction = Hero.Action
+            END SELECT
+        CASE JUMPINGDOWN
+            IF Hero.CurrentRow = 4 THEN Hero.Action = WALKING ELSE AnimationStep = AnimationStep + 1
+            SELECT CASE AnimationStep
+                CASE 1 TO 3
+                    Hero.Y = Hero.Y - 3
+                    Hero.Frame = 3
+                CASE 4 TO 6
+                CASE 7 TO 12
+                    Hero.Y = Hero.Y + 8
+                    Hero.Frame = 1
+                CASE 13
+                    Hero.CurrentRow = Hero.CurrentRow + 1
+                    JustLanded = True
+                    Hero.Action = STOPPED: Hero.Direction = Hero.Action
+            END SELECT
+        CASE DROWNING
+            AnimationStep = AnimationStep + 1
+            SELECT CASE AnimationStep
+                CASE 1 TO 5, 11 TO 15, 21 TO 25, 30 TO 35
+                    _PUTIMAGE (Hero.X, Hero.Y - HeroHeight + AnimationStep)-STEP(HeroWidth, HeroHeight - AnimationStep), HeroSprites(Hero.Frame), GameScreen, (0, 0)-(HeroWidth, HeroHeight - AnimationStep)
+                CASE 6 TO 10, 16 TO 20, 26 TO 29
+                    _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight + AnimationStep)-STEP(-HeroWidth, HeroHeight - AnimationStep), HeroSprites(Hero.Frame), GameScreen, (0, 0)-(HeroWidth, HeroHeight - AnimationStep)
+                CASE 36
+                    IF Lives = 0 THEN
+                        GameOver = True
+                    ELSE
+                        TIMER(TempTimer) ON
+                        Hero.CurrentRow = 0
+                        Hero.X = 100
+                        Hero.Y = HeroStartRow
+                        Hero.Direction = STOPPED
+                        Hero.Face = MOVINGRIGHT
+                        Hero.Action = STOPPED
+                        Hero.Frame = 1
+                    END IF
+            END SELECT
+        CASE FREEZING
+            AnimationStep = AnimationStep + 1
+            'Recolor the hero sprite to show it's freezing
+            _DEST HeroFreezingSprite
+            FOR i = 0 TO _WIDTH(HeroFreezingSprite) - 1
+                IF AnimationStep >= _HEIGHT(HeroFreezingSprite) THEN EXIT FOR
+                IF POINT(i, AnimationStep) <> _RGBA32(0, 0, 0, 0) THEN
+                    PSET (i, AnimationStep), _RGB32(0, 150 - AnimationStep * 3, 219 + AnimationStep)
+                END IF
+            NEXT i
+            _DEST GameScreen
+            SELECT CASE AnimationStep
+                CASE 1 TO 5, 11 TO 39
+                    _PUTIMAGE (Hero.X, Hero.Y - HeroHeight)-STEP(HeroWidth, HeroHeight), HeroFreezingSprite, GameScreen
+                CASE 6 TO 10
+                    _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight)-STEP(-HeroWidth, HeroHeight), HeroFreezingSprite, GameScreen
+                CASE 40
+                    _FREEIMAGE HeroFreezingSprite
+                    IF Lives = 0 THEN
+                        GameOver = True
+                    ELSE
+                        TIMER(TempTimer) ON
+                        Temperature = InitialTemperature
+                        Hero.CurrentRow = 0
+                        Hero.X = 100
+                        Hero.Y = HeroStartRow
+                        Hero.Direction = STOPPED
+                        Hero.Face = MOVINGRIGHT
+                        Hero.Action = STOPPED
+                        Hero.Frame = 1
+                    END IF
+            END SELECT
+        CASE STOPPED
+            Hero.Frame = 1
+    END SELECT
+
+    IF Hero.X + HeroWidth > _WIDTH THEN Hero.X = _WIDTH - HeroWidth
+    IF Hero.X < 0 THEN Hero.X = 0
+END IF
+
+IF Hero.Face THEN
+    SELECT CASE Hero.Face
+        CASE MOVINGRIGHT
+            _PUTIMAGE (Hero.X, Hero.Y - HeroHeight), HeroSprites(Hero.Frame), GameScreen
+        CASE MOVINGLEFT
+            _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight)-STEP(-HeroWidth - 1, HeroHeight - 1), HeroSprites(Hero.Frame), GameScreen
+    END SELECT
+END IF
+END SUB
+
+'------------------------------------------------------------------------------
+SUB CheckLanding
+'Check to see if the hero landed safely:
+IF Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
+    SELECT CASE BlockType
+        CASE SINGLEBLOCK
+            IF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 2 THEN
+                'Safe on the first block
+                Safe = True
+            ELSEIF IceRow(Hero.CurrentRow).MirroredPosition AND Hero.X + HeroWidth > IceRow(Hero.CurrentRow).MirroredPosition AND Hero.X < IceRow(Hero.CurrentRow).MirroredPosition + HeroWidth * 2 THEN
+                'Safe on the first mirrored block
+                Safe = True
+            ELSEIF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position + HeroWidth * 3.5 AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 3.5 + HeroWidth * 2 THEN
+                'Safe on the second block
+                Safe = True
+            ELSEIF IceRow(Hero.CurrentRow).MirroredPosition AND Hero.X + HeroWidth > IceRow(Hero.CurrentRow).MirroredPosition + HeroWidth * 3.5 AND Hero.X < IceRow(Hero.CurrentRow).MirroredPosition + HeroWidth * 3.5 + HeroWidth * 2 THEN
+                'Safe on the second mirrored block
+                Safe = True
+            ELSEIF Hero.X + HeroWidth > IceRow(Hero.CurrentRow).Position + HeroWidth * 7 AND Hero.X < IceRow(Hero.CurrentRow).Position + HeroWidth * 7 + HeroWidth * 2 THEN
+                'Safe on the third block
+                Safe = True
+            ELSEIF IceRow(Hero.CurrentRow).MirroredPosition AND Hero.X + HeroWidth > IceRow(Hero.CurrentRow).MirroredPosition + HeroWidth * 7 AND Hero.X < IceRow(Hero.CurrentRow).MirroredPosition + HeroWidth * 7 + HeroWidth * 2 THEN
+                'Safe on the third mirrored block
+                Safe = True
+            ELSE
+                'Drowned
+                IF Hero.Action <> DROWNING THEN
+                    IF DrowningSound THEN _SNDPLAYCOPY (DrowningSound)
+                    TIMER(TempTimer) OFF
+                    Hero.Frame = 4
+                    Hero.Action = DROWNING
+                    Hero.Face = STOPPED
+                    Hero.Direction = STOPPED
+                    Lives = Lives - 1
+                    AnimationStep = 0
+                END IF
+            END IF
+        CASE DOUBLEBLOCK
+        CASE MOVINGBLOCK
+    END SELECT
+    IF Safe THEN
+        Safe = False
+        IF IceRow(Hero.CurrentRow).State = False AND JustLanded THEN
+            IF BlockSound THEN _SNDPLAYCOPY (BlockSound)
+            JustLanded = False
+            IceRow(Hero.CurrentRow).State = True
+            RestoreRowsTimer = TIMER
+            Score = Score + Level * 10
+        END IF
+    END IF
+END IF
+END SUB
+
+'------------------------------------------------------------------------------
 SUB ReadKeyboard
-IF NOT InGame OR Hero.Action = DROWNING THEN EXIT SUB
+DIM k AS INTEGER
+k = _KEYHIT
+IF k = 13 THEN InGame = True: TIMER(TempTimer) ON
+IF k = 32 AND Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) AND InGame THEN
+    IF IceRow(Hero.CurrentRow).Direction = MOVINGRIGHT THEN
+        IceRow(Hero.CurrentRow).Direction = MOVINGLEFT
+        IF IceRow(Hero.CurrentRow).MirroredPosition THEN SWAP IceRow(Hero.CurrentRow).Position, IceRow(Hero.CurrentRow).MirroredPosition
+    ELSE
+        IceRow(Hero.CurrentRow).Direction = MOVINGRIGHT
+        IF IceRow(Hero.CurrentRow).MirroredPosition THEN SWAP IceRow(Hero.CurrentRow).Position, IceRow(Hero.CurrentRow).MirroredPosition
+    END IF
+END IF
+
+IF NOT InGame OR Hero.Action = DROWNING OR Hero.Action = FREEZING THEN EXIT SUB
 IF Hero.Action = WALKING THEN Hero.Action = STOPPED: Hero.Direction = Hero.Action
-'IF ScanKey%(75) THEN Hero.Direction = MOVINGLEFT: Hero.Face = Hero.Direction: IF Hero.Action = STOPPED THEN Hero.Action = WALKING
-'IF ScanKey%(77) THEN Hero.Direction = MOVINGRIGHT: Hero.Face = Hero.Direction: IF Hero.Action = STOPPED THEN Hero.Action = WALKING
-'IF ScanKey%(72) AND Hero.CurrentRow > 0 THEN IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGUP: AnimationStep = 0
-'IF ScanKey%(80) AND Hero.CurrentRow < 4 THEN IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGDOWN: AnimationStep = 0
+
 IF _KEYDOWN(19200) THEN Hero.Direction = MOVINGLEFT: Hero.Face = Hero.Direction: IF Hero.Action = STOPPED THEN Hero.Action = WALKING
 IF _KEYDOWN(19712) THEN Hero.Direction = MOVINGRIGHT: Hero.Face = Hero.Direction: IF Hero.Action = STOPPED THEN Hero.Action = WALKING
-IF _KEYDOWN(18432) AND Hero.CurrentRow > 0 THEN IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGUP: AnimationStep = 0
-IF _KEYDOWN(20480) AND Hero.CurrentRow < 4 THEN IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGDOWN: AnimationStep = 0
+IF _KEYDOWN(18432) AND Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
+    IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGUP: AnimationStep = 0
+    IF JumpSound THEN _SNDPLAYCOPY (JumpSound)
+END IF
+IF _KEYDOWN(20480) AND Hero.CurrentRow < 4 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
+    IF Hero.Action = WALKING OR Hero.Action = STOPPED THEN Hero.Action = JUMPINGDOWN: AnimationStep = 0
+    IF JumpSound THEN _SNDPLAYCOPY (JumpSound)
+END IF
 END SUB
 
 '------------------------------------------------------------------------------
@@ -394,8 +514,15 @@ END SUB
 SUB DecreaseTemperature
 Temperature = Temperature - 1
 IF Temperature = 0 THEN
-    GameOver = True
+    IF DrowningSound THEN _SNDPLAYCOPY (DrowningSound)
     TIMER(TempTimer) OFF
+    HeroFreezingSprite = _COPYIMAGE(HeroSprites(4))
+    _SOURCE HeroFreezingSprite
+    Hero.Action = FREEZING
+    Hero.Face = STOPPED
+    Hero.Direction = STOPPED
+    Lives = Lives - 1
+    AnimationStep = 0
 END IF
 END SUB
 
@@ -410,7 +537,6 @@ DIM PrevDest AS LONG, i AS _BYTE
 STATIC AuroraCount AS INTEGER
 STATIC CreditCount AS INTEGER
 STATIC CreditUpdate AS INTEGER
-STATIC HeroFrameCount AS INTEGER
 
 AuroraCount = AuroraCount + 1
 IF AuroraCount > 3 THEN
@@ -452,7 +578,12 @@ IF Hero.Action = WALKING AND InGame THEN
     IF Hero.Frame = 1 THEN Hero.Frame = 2 ELSE Hero.Frame = 1
 END IF
 
+IF IceRow(1).State AND IceRow(2).State AND IceRow(3).State AND IceRow(4).State AND NOT IglooFinished THEN
+    IF TIMER - RestoreRowsTimer > .3 THEN
+        FOR i = 1 TO 4
+            IceRow(i).State = False
+        NEXT i
+    END IF
+END IF
+
 END SUB
-
-'------------------------------------------------------------------------------
-
