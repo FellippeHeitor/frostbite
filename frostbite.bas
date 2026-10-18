@@ -78,7 +78,10 @@
 '    - Crabs and clams have sprites now (ripped from gameplay footage, like
 '      the hero). Clams move in bursts and rest with their shells shut.
 '    - Added the polar bear, from level 4 onward. He patrols the shore
-'      and chases the hero whenever he's on it.
+'      and chases the hero whenever he's on it. When he gets him, the hero
+'      runs off screen, away from the bear and with the bear on his heels,
+'      with the chase sound from the original (speeds, timings and sound
+'      taken from gameplay footage).
 '    - 9 levels defined. Early levels are slower, and speed now increases
 '      gradually all the way, also past the last defined level.
 '
@@ -158,6 +161,13 @@ CONST BearHeight = 29
 CONST BearPatrolSpeed = 1
 CONST BearChaseSpeed = 1.6
 
+'Once caught, the hero runs off screen with the bear on his heels (speeds and
+'timings measured from gameplay footage of the original):
+CONST HeroFleeSpeed = 4.2
+CONST BearFleeSpeed = 3.3
+CONST ChaseSoundDelay = 6 '    frames between the catch and the chase sound
+CONST DeathSoundFrames = 45 '  length of the death sound that follows it
+
 'Type definitions: ------------------------------------------------------------
 TYPE RowInfo
     Position AS SINGLE
@@ -183,6 +193,7 @@ TYPE BearInfo
     X AS SINGLE
     Direction AS INTEGER
     Frame AS _BYTE
+    Moving AS _BYTE
 END TYPE
 
 TYPE HeroInfo
@@ -272,6 +283,7 @@ DIM SHARED DrowningSound AS LONG
 DIM SHARED IglooBlockCountSound AS LONG
 DIM SHARED ScoreCountSound AS LONG
 DIM SHARED CollectFishSound AS LONG
+DIM SHARED BearChaseSound AS LONG
 
 'For testing/debugging purposes
 $IF INTERNALBUILD = TRUE THEN
@@ -1071,7 +1083,9 @@ SUB MoveBear
 
     IF Levels(ActualLevel).HasBear = 0 THEN EXIT SUB
 
+    PolarBear.Moving = False
     IF InGame AND NOT WorldPaused AND Hero.Action <> ENTERINGIGLOO THEN
+        PolarBear.Moving = True
         Speed = BearPatrolSpeed
         IF Hero.CurrentRow = 0 THEN
             HeroCenter = Hero.X + HeroWidth / 2
@@ -1085,8 +1099,14 @@ SUB MoveBear
         IF PolarBear.X < 0 THEN PolarBear.X = 0: PolarBear.Direction = MOVINGRIGHT
         IF PolarBear.X > _WIDTH(GameScreen) - BearWidth THEN PolarBear.X = _WIDTH(GameScreen) - BearWidth: PolarBear.Direction = MOVINGLEFT
     ELSEIF InGame AND Hero.Action = CAUGHTBYBEAR THEN
-        'Carry the hero off screen:
-        PolarBear.X = PolarBear.X + 3 * PolarBear.Direction
+        'Chase the fleeing hero; once he's off screen the bear stops, staying
+        'on screen like in the original:
+        IF Hero.X + HeroWidth > 0 AND Hero.X < _WIDTH(GameScreen) THEN
+            PolarBear.X = PolarBear.X + BearFleeSpeed * PolarBear.Direction
+            IF PolarBear.X < 0 THEN PolarBear.X = 0
+            IF PolarBear.X > _WIDTH(GameScreen) - BearWidth THEN PolarBear.X = _WIDTH(GameScreen) - BearWidth
+            PolarBear.Moving = True
+        END IF
     END IF
 
     IF PolarBear.Direction = MOVINGRIGHT THEN
@@ -1104,9 +1124,14 @@ SUB CheckBear
     IF Hero.CurrentRow <> 0 OR (Hero.Action <> STOPPED AND Hero.Action <> WALKING) THEN EXIT SUB
 
     IF Hero.X + HeroWidth - 6 > PolarBear.X + 4 AND Hero.X + 6 < PolarBear.X + BearWidth - 4 THEN
-        IF DrowningSound THEN _SNDPLAYCOPY DrowningSound
         TIMER(TempTimer) OFF
-        Hero.Frame = 4
+        'The hero makes a run for it, away from the bear, and the bear goes after him:
+        IF Hero.X + HeroWidth / 2 < PolarBear.X + BearWidth / 2 THEN
+            PolarBear.Direction = MOVINGLEFT
+        ELSE
+            PolarBear.Direction = MOVINGRIGHT
+        END IF
+        Hero.Frame = 1
         Hero.Action = CAUGHTBYBEAR
         Hero.Direction = STOPPED
         Hero.Face = PolarBear.Direction
@@ -1161,6 +1186,8 @@ END SUB
 
 '------------------------------------------------------------------------------
 SUB MoveHero
+    STATIC DeathSoundStep AS INTEGER
+
     'Hero:
     IF InGame THEN
 
@@ -1275,14 +1302,23 @@ SUB MoveHero
                     Hero.Action = STOPPED
                 END IF
             CASE CAUGHTBYBEAR
+                'The hero runs off screen, outrunning the bear, while the chase
+                'sound plays. As soon as he's gone it switches to the usual death
+                'sound, and the life is lost.
                 AnimationStep = AnimationStep + 1
-                'The bear pushes the hero ahead of it until they're both off screen:
-                IF PolarBear.Direction = MOVINGRIGHT THEN
-                    Hero.X = PolarBear.X + BearWidth - 12
-                ELSE
-                    Hero.X = PolarBear.X + 12 - HeroWidth
-                END IF
-                IF AnimationStep > 90 OR PolarBear.X > _WIDTH(GameScreen) OR PolarBear.X < -BearWidth THEN
+                IF AnimationStep = 1 THEN DeathSoundStep = 0
+
+                IF Hero.X + HeroWidth > 0 AND Hero.X < _WIDTH(GameScreen) THEN
+                    IF AnimationStep = ChaseSoundDelay AND BearChaseSound <> 0 THEN _SNDLOOP BearChaseSound
+                    Hero.X = Hero.X + HeroFleeSpeed * Hero.Face
+                    IF AnimationStep MOD 3 = 0 THEN
+                        IF Hero.Frame = 1 THEN Hero.Frame = 2 ELSE Hero.Frame = 1
+                    END IF
+                ELSEIF DeathSoundStep = 0 THEN
+                    IF BearChaseSound THEN _SNDSTOP BearChaseSound
+                    IF DrowningSound THEN _SNDPLAYCOPY DrowningSound
+                    DeathSoundStep = AnimationStep
+                ELSEIF AnimationStep >= DeathSoundStep + DeathSoundFrames THEN
                     IF Lives <= -1 THEN
                         Hero.Face = STOPPED
                         GameOver = True
@@ -1626,7 +1662,7 @@ SUB UpdateFrames
         IF Hero.Frame = 1 THEN Hero.Frame = 2 ELSE Hero.Frame = 1
     END IF
 
-    IF InGame AND (NOT WorldPaused OR Hero.Action = CAUGHTBYBEAR) THEN
+    IF InGame AND PolarBear.Moving THEN
         BearStep = BearStep + 1
         IF BearStep > 1 THEN
             BearStep = 0
@@ -3222,6 +3258,598 @@ SUB LoadAssets
     A$ = A$ + "24;000^mJgN000P_a3000P;:00>1%%00"
     RestoreFile A$, "fish.ogg"
 
+    'bearchase.ogg (ripped from gameplay footage of the original)
+    A$ = ""
+    A$ = A$ + "?MfIC1P00000000000`[=?=E000008Hh@[I0N4PM_9WHY=7000001@4[0000"
+    A$ = A$ + "00000RC00000000^1ldIW=50000000000000_fldD50000PmL]GC?lo:oooo"
+    A$ = A$ + "oooooooooooo1>PM_9WHY=730000<5VMVIC<^LS;a03<80000T2000`HbEFH"
+    A$ = A$ + "dUfK^m5MYeFIm83<b8C;`TC;b@3Ea<S>a4S>eTS;`03<`03<Ja00000KQifI"
+    A$ = A$ + "e5fIUeCM^AfB0000X5VKTaFIbmUKQeFImTdD?1BCUAFJQ1RIYaFIP0WL_AFM"
+    A$ = A$ + "SE6IP8FNPLdK_M6KU1BB^=V;P<TLU56MUA68_iV>P0C>_83=_83<b8S;F000"
+    A$ = A$ + "0HGI^AfKbmEJTecF`deF`deF`deF`de70000UifH_AFIbe3CQIgHf4S;aTS;"
+    A$ = A$ + "a03<P`FJRIgKb9FJc11000@KQYfKbmUHb5VKTeCK`AS<?0000dFJ^mVLOIGI"
+    A$ = A$ + "b=GJ_iF?`X1000`H_e6LQAGJRaFIO9VLQi6IceCJcmFK]17=b4@1fmVLRUfL"
+    A$ = A$ + "R8d@F5000100T<76ZHDYcI1Q@XQ@@UahL8Tc[aN62aD42bQ<<]ebU<7TQ@:X"
+    A$ = A$ + "2QhFX48d@F5000400LH@hA1Q:642Q@H9mPUT3NB?842Q8V3ND@HJ1Q@842Q@"
+    A$ = A$ + "842Q@842Q@HAiPVT3NB@8d1QS33><<HihP?74FD>H1aPW44jP@h32Q[V3bJ>"
+    A$ = A$ + "842QTD3B@=X1iP>74:<;XXXP433^F@81eP2S2B><8CmP;84RJ>HBeP_64NF@"
+    A$ = A$ + "hI1QY542Q@891Q4T3J@@8S1Q654FB>X1iP;54^L@XZ1QZT32O@88d@F50090"
+    A$ = A$ + "00ZXXXXXXX04J8[20P<0001@AAaaaaAbAbAbaba28d@F50001002000X8Y8Y"
+    A$ = A$ + "8i8i8999I9I9I9I9I9Yi9Z:;;;;;;;;;;;34J8[20P4000ED<DDLDL02=TE1"
+    A$ = A$ + "0@600P0XhXHYHYHYXYhi8j824J8[200P00010004d<dDlL4U4m<EEM]]]]]]"
+    A$ = A$ + "]]]]]]]]]]]]]]UUUU12=TE1004000QdYIFZ6P8<3TQ12=TE1002000PAX8<"
+    A$ = A$ + "438d@F5000400086:iPX9dJ>OcihPVU3JZD\id1W8EKNB^YRiVciL>Wc9K>W"
+    A$ = A$ + "ahL>WcYXLV53JV@[iL>W43JF:XI2]VciLNB\i1]VZdJ>WcIL>W>HL6QaiL>W"
+    A$ = A$ + "VdJN@ZISeVciLF@[YiXV;5K>Wc9BiVWDK^D]iL>WciL>WciL>WciLZNaYc1W"
+    A$ = A$ + "ChL>Wc9ZmV[UK2MaiL>W?ILjNc94>WciL>WciL>WciL>Wc98d@F500010044"
+    A$ = A$ + "6fHHLW22BO>JPHD4RYQ<Y7dmX3C2J<8W2YNdXS6YDZ32UDILBYd98d@F5000"
+    A$ = A$ + "200@84BQD85BQD85BQD85BQH86RQH8WbYL:X2ZT:YRZX<:cb\<;cb\<;cb\>"
+    A$ = A$ + "\cj\>\33a@<43]B[4;eD]ESeH]VkiL^V3B[EJ]F[e:UBYD:UBYP@3IE00020"
+    A$ = A$ + "0@P@6T1I@65BQD85RQH:WbYL:X2Z02=TE100P00P00000lTlL4M4M4M4M4M4"
+    A$ = A$ + "M4M4M4MlLlL4U4U4U4U4]<]<e<mD5EEMUM]UeUe]m]5f5femmemmme=ne56F"
+    A$ = A$ + "FFFFFFFFFFFFFFFFFFFFF22=TE100800002Q@84BQD85BQD:6SaL<W3jT@94"
+    A$ = A$ + "8d@F500020020000`AaAaaAbAbABbBbBBCBcBcbCcCcCCdCDDDdddDEdEdED"
+    A$ = A$ + "gdFDfDfdedeDfdEEFefEFffFfFgfGFffggggggggggggggggggGG78d@F500"
+    A$ = A$ + "B000j8i8Y8Y8Y8ihhh89914J8[200I000100::>:>>>>BBBBBFBJBNFNFRJV"
+    A$ = A$ + "JVNVNZRZ0Q6bZ000@00@00000000:J:N:V:N:R:N>R>RBRFVFRJZJ^RbVb^^"
+    A$ = A$ + "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^0Q6bZ00@200@79"
+    A$ = A$ + "797979595959797P@3IE008300800`a`a@BAbabbBCcCcCcCCdCdCdcdCEdE"
+    A$ = A$ + "d58d@F500020020000000`@b`BabAcACBDBeBeBECeBeBEDeCEEEEEEEEEEE"
+    A$ = A$ + "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEeddddd48d@F9000100dJ=7c]NYS"
+    A$ = A$ + "1Q>[GR<:T2je>USiTN=cX88WW3A<SQiaB5c@<H\U1A8U58d@FA00A100063b"
+    A$ = A$ + "a@<7biLBZCBA>WS:MDZaiLDZSBMD:5[YJ]SBUJ;E[=>WSBMD:SBYJ]dZMD:E"
+    A$ = A$ + "[YJ\000P0L0002`2Q2=TE40@D0001bPD:TBQD:VcYL>TBYL>VcQH:VcYL>Vc"
+    A$ = A$ + "iPBWDZL>WdiTBTBYL>VcYL>WDjLBVciTBW4:00080700P0\@X@3I5104W00h"
+    A$ = A$ + "`aACCBCCDDBCCDdCDdeeCDDeEBCcdDCDDEECDdDeDEEFFdDEFFBCcdDCDDeD"
+    A$ = A$ + "CDDEEDeDFfDEeFfcddFfDEEgFDEefFfFfggEFFGgcdDfFDEeffDEeFgEFFGG"
+    A$ = A$ + "ffFgGBCcdDCDDEECDDeeDEeffDEefFCDdeEDEEFFDEEFfeEFGGeEFgGCDDEe"
+    A$ = A$ + "CeDfEDEEFFEfEGFEFFgGdEEgFeEfGGEFFggfFGhGFgW`XZZ^^Y\[^^Z\\^_\"
+    A$ = A$ + "^\_^]_>U9==CC=AAEE=AAEECGEKKCEGKK=AAGGAEEKIACEGIEIIOOEGIIO=A"
+    A$ = A$ + "AGGAEEIIAEEIIEIIMMGIGMKAEEMKEIGOOCGGMMIMMQUIKMOQCGGMMEIIOOEI"
+    A$ = A$ + "IMOIMM\eemmm<=]]=MMee=MEem]eeENV]]=n5EEeeEUU5nEUUmme56NN^em5"
+    A$ = A$ + "N6EEee=UMmeEUUe5^me=Jk[KllJKS]]?bnj8<LT_`bBGKKS^nf4Vee=jK<Dh"
+    A$ = A$ + "gH8=CCKKCGEMMCGGOMIMMSfjj25EEeeEUUmmEMUmm]em56^mmm=6EMmmEUU5"
+    A$ = A$ + "6F]UM6fmmEZk;DIEfFhgFGgiHfFGHighXc__b@GMKQfjj6;cnj:?k67M6jS0"
+    A$ = A$ + "00P1L0002`4:3DXQ\R00RC00H@8W3aD@8BaP@84BY@8TBA<64bL>YTaLB9D:"
+    A$ = A$ + "YFXDB]8632I>VDbL>Y4:QF:D:]DX4J]@Y4KQBY5K]F]VJ]H=4:]FXDJ]@YdR"
+    A$ = A$ + "YFZ6K]F=6aH@8ciTBVc9UBYdJQBYebL>ZdiPDZ32YD:UJaB:5SE>WDbP>Zd1"
+    A$ = A$ + "QDZT:aD9URa@Z4KUD:6;YD<fJaF^5SiLXDJaBZ4KUD:FKaD>fRaL>RaP@Vc9"
+    A$ = A$ + "U<WC:QBYe:UD[EiLBY32YDV3:YB:5SUB:5cL>Yd1QDZ32YD9URaD:5KQB9f:"
+    A$ = A$ + "YD=F:YF\5SiL;5Se@9eRUD:6;YD<fRaL^5KiF74J]@Z4SQB96KaH^fJ]J<D:"
+    A$ = A$ + "aF9URaB:EKaH]fKaH>7:UH\T:eH9UReF=V[aH<WCaF^VJaJ^5SmJ]UKmJ>7d"
+    A$ = A$ + "YF[FCaD^fRaL>VK1I=Wkm>8dJQBY53UB<fJ]J]5SiLXDR]B:ESUB:FKaH>gJ"
+    A$ = A$ + "aJ?D:aH9UReB:ES]H\VSeH_VJ]J]5SiJZ5[iJ>gkaH>fC]F=gRaJ>5KiJ=Wk"
+    A$ = A$ + "mJ^eS5000<P300@0V@IP2=TE20@D0001QXD<64J@86ciTB32aH>WDZH<W32Y"
+    A$ = A$ + "B5SiL@XDbL>8D:YDVc1QB9U2UBZTB]FXD:UDZe:000X0700P0\1=UHa1X@3I"
+    A$ = A$ + "U00T:00H`aabbcCDdDEffaBbcCDddDEeffabbcCDddDEeffbcCDddDEeeEGg"
+    A$ = A$ + "bcCDdDEEeeEGgCDDeDEeeEFFggCDdDEEeeEFfggdDEEeeEFFfFhGdDeEeeEF"
+    A$ = A$ + "FFfgHeEeeEFFfFgFHHEeeeEFFffFgHhFGGGggGHHiXc]^]^^___`a_ca000l"
+    A$ = A$ + "4L00P:`6FM4>YXa2\@3IU00T100@H<8T1QD832QD85BY@8UB9000H0700P0<"
+    A$ = A$ + "Qb05J8[40PX00002A:UBYd8UBYD:U6YD:UBYD:Q@842Q@842Q@842Q@842Q@"
+    A$ = A$ + "842Q@842Q@842Q@842Q@8D00ho4>0Po?H3J:aR3@Q6b:108L000`HD:VbaP>"
+    A$ = A$ + "9TB=<VS1QB9UBYF[QaH<8D:YD[eBE>74:UDZeR]H\biP@9UB]F\6SM@8UJ]F"
+    A$ = A$ + "\6[eJ^32YDZ5[aJ>HcQBYeRaH=WcmN?TB]F<F[eL_gkUF;6[eL>g32Q`dBaH"
+    A$ = A$ + "^V[mP_gkYH[F[eL?h32Q@5KeJ=7l1Q@84^H<gcmP`g32Q`5SiL^742O`7460"
+    A$ = A$ + "0LgP300A2fh<\BBWEhX1GXQ\B0029008@8VRaL>W32Q@84YD<VciL@842QB9"
+    A$ = A$ + "BYH<WciP>842U@6SiL>742Q@XD:U<6ciL>842U@YD:I>Wc1Q@84:UBYDbL>X"
+    A$ = A$ + "32Q@9D:UBYdiL@842Q@YD:UBY3jP@8D2UBYD:UB842Q@9D:UBYD:U@842U@Y"
+    A$ = A$ + "D:UBYD:Q@X4:UBYD:UBYD2Q@YD:UBYD:UBY42QBYD:UBYD:UB:D:UBYD:UBY"
+    A$ = A$ + "D:UDXD:UBYD:UBYD:U@YD:UBYD:UD:EB5000LP300@061MB6EIAHSV`5N0X@"
+    A$ = A$ + "3IU000400@1aF=ERM64caLFZQP@<XVZ@:URQa<TbPHJ:CY@856bL:6R0QF\E"
+    A$ = A$ + ";E<0000440028T00`04D`<00<h04nL@@W04Ld600884I6R4=\@`Q7D90A4C5"
+    A$ = A$ + "0@R9X@^00EHa5YMa5@G6P;X;^[3421QP@@\h0X0B07L2g`Cl6N2gPC@WR:e1"
+    A$ = A$ + "1000000L00`300`a50A4AcQA6J\17Mha7P4B0000000b00l100L82@4AdLHT"
+    A$ = A$ + "Q6K`A7Nl18Q40000000000004@01000000P000004@`CWMfD000@_2000000"
+    A$ = A$ + "0lJcCCU00000RQL?CBd5aia6SXB;6W;\l628Pla8P42:]`l\k2l\dj;akJ;["
+    A$ = A$ + "bRj`kb;^e>K_T4B8RTR;9_[]gR:^2?\^kRk[0GR8S4b;]DL^gb7b5`?IYP50"
+    A$ = A$ + "0000C:ZongSNDhoJk@>8bG9OLIo=X0f0S\WI400<0000h^mO]D:OoWg59J?N"
+    A$ = A$ + "hiSNNfKK7\`UKa;>lmllAY`8:M@DlcOBDYU=:NB`MC>0]Jb\6b31YD9KbR40"
+    A$ = A$ + "kb0JJRmd??c5@D09080;]?MNShc5T069K_fXJi[8lh`:BR81`30Q8gKE5D@g"
+    A$ = A$ + "mLT0g00400O6=4ackF`mG3W8ON?T4?0M8_CS\c2g60L010Po_bLEQK3ilg^O"
+    A$ = A$ + "flS9\K0S8KZD11O]S3FXl00LT=J2aZJGf\5`[Jgg\=jQ`Q7CW1N>0@AAdVDk"
+    A$ = A$ + "GCT0W00LnmFT5SnZP`OL[f_:0^c5MScH77nJk]G?H[F>[;Zf0`@BTRNeE]_S"
+    A$ = A$ + "<Jd@g5ZPP400\;TiJf3`8OG;Mm<jPfiT=LT?WR\?R:gnLZ;_ZXcId2h;7M68"
+    A$ = A$ + "gaGFn[00`Xc\A3X>cRW1:V0Y0hHP82ffPeCZJhm:`[2nlW:X9YXeklH9mK]h"
+    A$ = A$ + "SoVnlSbUVk;?][]0]g8mZ4Ml2;>M;DZieOEbEdI5M>d6OPWZNaf:^m_lPO65"
+    A$ = A$ + "Ee1817hZhHG9_:YTfMS`KVHkGkmbD:hIAa4Nh31QYMlQ7PnB7j9njjCnGYC2"
+    A$ = A$ + "OY<6CNBn\mdMcbNDN2`OkeHAjZRLTWCaP^M2N5MmY\S^Yj8ETPHZ?T;QbIYI"
+    A$ = A$ + "3SCoPV6i^IL40h3JT2l0R5X_4\FJohkXWemPL^E;f^GYiS=JDlR3`SAI@@9`"
+    A$ = A$ + "IjG[9]FBMCeAGcJnkXZhQ?CkA\c0b6AdT^_ecdeH3<[i1^OSaC[aQDFQYOFk"
+    A$ = A$ + "G\:T3:Jh^RJab65[K6\MWXTYi5CDeCJbiMMLVePi@@Wk[WS^`2^k>1ZSn[k@"
+    A$ = A$ + "jo_[dikgW5^X19E:O[G1\0`3C=[kZf4AKLfWYfN9WCJ6<V0go;fXWA4`39>:"
+    A$ = A$ + ";d_Ha<?e]B7033TUQe:0NQ6IP80?HS8dlSeA4KZUI`EVT\`BVY1l`XH;@5`o"
+    A$ = A$ + ">gRE;9m<DJl<lT:RIM4BRQgDFJaAMaKK6iVTaSVQ?@1Ij[BklVC;\dK?Pj<j"
+    A$ = A$ + ">G\<[f`27F5IRI[QMJKhWb:i8ZO;HYM]V=in^[9n9`dk3BKO0_K\=E=fDihM"
+    A$ = A$ + "fC7S2Me00\YA>Bo485?50a7U4@JSo6=Oj>HHj9IdmBKKNLf^YBKkIjhkO>W2"
+    A$ = A$ + "LV3T5PRGoI3l8eU=WAKRB45BOc@EKgD3g[o1_la:nVGN>MneaE6V9C[08kYW"
+    A$ = A$ + "74:aPJ0F:gg6[OnBfgLSa_Dng;:YeE:g_XZ4[e4<YnT:9o;4Ne;c2:V`:oJJ"
+    A$ = A$ + "L>c0[IjAoV=_BOMO41DX\J9C@>6ZlI?;<oYMO^^Xa2N00Rnfo^HGH88ED4Xc"
+    A$ = A$ + "UNDmOo?jfm\jj=\=L_kZWi?ZMJQa=JZG_Z\N[mT`<FA@kfY<E0df9TcfEB8j"
+    A$ = A$ + "_OcF0bT@=akWED2@7LL>]?O^0C@?^E^XOI:e0110hmYjI``mh^7E:`T4TaIb"
+    A$ = A$ + "dPVa8A4KM`]_Qd9KoZk30R00<Go=gQdflIIGei3Q3>G=oBdk\I10lc3a@f`O"
+    A$ = A$ + "m?BTP800[OWg\aKm>=c>G4>\COdh\hJT>003kHCAfNL71@@00d3?LC;U8aO@"
+    A$ = A$ + "H3:MhXVaG=2ZKCl54lCG8PfE_R@2110`_UVTYajeIJ?MGGkO_e:]SnH>j?Z4"
+    A$ = A$ + "m<0ol@NT6n_W@0820`Df7fF_<S\ombXlKU5Zi<<J<L3K0``?T3Q7NEe`<4N0"
+    A$ = A$ + "0<b`?RE@Oc]dW2\iYVGKmGackR3]0@@@4PQfLUQ4F10`GR\lFFOEj]mSmIU5"
+    A$ = A$ + "Xc?G^DaH]VcohOdQhK_2M43gl4c?9hnDC6J1\YUJ@000TA@OYYBjl>QM_Xf\"
+    A$ = A$ + "ehmI_2`[7hZB6KQkfn3aC0PfUaQca0h7X]2eRm?e;SCgCOi<NkC474eNiHY1"
+    A$ = A$ + ";5EGYC00dDK000IE5d4000e0dmoljKYVEjAk86]g]eBhdS;cjh_l:4S:NCS="
+    A$ = A$ + "eeVVch2Dd;a9d^EW@GM_5TB;Q:J6T6S:KOM6S2d7G:Yd\<4Alc?JT3Aa@@To"
+    A$ = A$ + "d_n_;d9T^SWAI=n[_M9_eD?Q:\[>djime@j<lCT;7k;?nfI`kTW@=2?kcNl9"
+    A$ = A$ + "VS:fo71dC0=5Zj@N_9L`VU3hI>SfZ3R:0i`^C4>g8mINV;bCPgH__8POWa0B"
+    A$ = A$ + "3PO0J=njgfdAV>`N8kj^G6jiT4X2H]EdedcUW9M]?2K;jii_>nE]_fLMdKb]"
+    A$ = A$ + "e_\Jdi>B6E;[3_Jf2Vm5U<?33ZS8MOoFPWE4776LhC6AD:k[fU4ncj=B@e3m"
+    A$ = A$ + "0cTa]]Bn0WcAK0J4Zhe1nXZGiN2]WDic^T3CP70eYO;OM[MI@lKmYlXL`52I"
+    A$ = A$ + "9V\5ok4=VE4I]g:BGKFTgSWB41@VJPN=COHM`Z=Ene?3U<gPcYR[1h3JT0i3"
+    A$ = A$ + ":2Jj<hF3_;H;JJ7YJi>2GTk2Fd@2B8=9hA2B`Z0KeVXYQeigjjRXGCmUVoKW"
+    A$ = A$ + "V`LW^d<]@5[Y42gIBP:^0FIa]`T^58BZeQ:h1`09CVXWUiLPA^VYdAg0D>ck"
+    A$ = A$ + "E1[b@VUND>?TI?C=G8_UZo[h0D;=K6UM1[B?ggdk4LlOZfgla^[lX]KcV4VY"
+    A$ = A$ + "joLaAoAdZ;<mRX:eWLf2;=hCVLRncA3oJ]=S9hKT[\0dPFhiHjBD?2NIIVh="
+    A$ = A$ + "0HQ?XA<86D6Te3i`OR<SAJ>?jn@6Rj^KM2jIH1lHTBiZ0ag_WdKiYG7gFbgd"
+    A$ = A$ + "^<niGT__bJnB3OI>;VNF18[TKWS^4?eMC>Va:PHDAh@lT[Z1H]?5=oioAE?K"
+    A$ = A$ + "Ad3Oge7?cCPC=aE_>BImn@HSI2mRKL[T2[;Bh7[3h7BHQFel<QSBP6Wi\FRP"
+    A$ = A$ + "MPK@TA:FCma7Uk=Q<f^n]40VOJKnId][R9AOl^E^9D`IIP15LheN0L6:]h2C"
+    A$ = A$ + "d6nFO;iVDgjnD8Ihb3POXA9`1`?P8D3_Wj>X>>a<I7A;]d=HT6S9dI43Z1HY"
+    A$ = A$ + "UYYn]fn>?Y^o=oEc5^WV_V_[e:9CFj]obgbN^efKjF:N=[G3=m0f:b?BBTh1"
+    A$ = A$ + "476I`G2CJY77N6[4LZYdJh@PJ8PTi6FB6Nlg4lo4[oWFDPNVd3HN2LJCOIXN"
+    A$ = A$ + "EDl00AoaFKGnkDjMV3Vmic44lZdg?6?9ZeA4\FCHnMn8i8jGR41bF@VGN9aQ"
+    A$ = A$ + "J?fOWPOS5QOXRNf40h7JD3l180M@6Ok@MmnjiF[78Sadc991Z18mZo7;_f]>"
+    A$ = A$ + "[[LKoK\7>ZAT3Oe32PIF<K<k]G@e\OIEcJV4hA1[E_;QBNGZ`eNYZoQN_EHk"
+    A$ = A$ + "IbCl<PBVRW[BQT9EFc>iTFb3;NZL4<khZTT_IIn@hhE6m0QMeT<Y2P4WH=oT"
+    A$ = A$ + "g2^VfQiWAelMWAb5BnFKHD8aNoO470g<ZA<=D]N6jmB<d<[N`7N111fU\fKM"
+    A$ = A$ + "c9jOI2PfneDkdaQK6h5JTAbbST`36;8XFb;2K?gc[FJN^W50P<k9]FLd0:1>"
+    A$ = A$ + ";m6>7Wk_fGl[]NLjfOA[fI7IhSCCWUZC^AWRbOoX<c5aX_=M[^UUU;gilHaN"
+    A$ = A$ + "HR0<QhGonm;00jNjTdI_HNginAWLamJ1Al<n;nh=SRXnAMh>SmmMQP=4SZc1"
+    A$ = A$ + "l;l3o@X4[580aaX95PhoZQo66eoMAm_2<AD<FDE:lEn7X?`57n\Y@b>>7Doo"
+    A$ = A$ + "o_1NQ561lgQ74:TXLJ7^WXO@LOUO^3PgVaL01Ph6XdQ[eTgNaLgcZKaj85Kf"
+    A$ = A$ + "eQU>j6T3kPN>00@ePF30PZB4D1TV4]cDJk<bbg>m`5gnfZnb_?C?NJK^7;:R"
+    A$ = A$ + "Udl:H]8UX85h4oLW3IBRXRNobY8kgZiPXWB^L8T]L@TK5V2oCeVB8cA9MZe`"
+    A$ = A$ + "8hHGQW_N5\O\MnhJYEF8]dkco^ToUbT>^OnUoLWD>9IKJ:CBSBeJMYf;IXfi"
+    A$ = A$ + "V]RibSW>M`^Hg0Nbi]8CaM00@XJfD6>H6Fo[QJ0PLL>>OdOFVf@5nL6cB61Z"
+    A$ = A$ + "O@;5i[6VgD_:;f[AmL6MdCCg4M217D3PRkoQNmmU^\^_jo5Mej?nSnL]jgW7"
+    A$ = A$ + "B]=8T`>WNOlUM]_GQ3Jn;_lZ1RO0=7EkYT@Ua]`WRZe2ZMG4MH]Ci6oM7Ign"
+    A$ = A$ + "7L?hAU0^K6G6C3VNbR0M11FHilL>L=Um@E75?D\WBTGk2Qh8hYYfBfcLWjY`"
+    A$ = A$ + "_?B_<\[Y@LXZnB9=AnOY8UN<B_kRWamIWF<4<jea5j]EjhRBTQb1<N>5CGUd"
+    A$ = A$ + "1h3JT071Z?@97=O[1lA>Wbl`J<WSE81PNV9hAD1QPBPUS__fgMHFVON;M>3o"
+    A$ = A$ + "7aiRm[MX5BnTgBoYeg6eEVFkTDbc4HG]XnaFSgn:a=WCM`aQoXWR@Wf8?>=R"
+    A$ = A$ + "[F@;U[IQj0kdkG\SYOgZ2Ig7]o]gNS4R8B5H83f`2G:k\BX@>lKdc]hSVU@7"
+    A$ = A$ + "?mQG:XL8jA\^:K8]5Qg4hH^5\lb]7AKTJ^;2YHQSoJbilHHDJc7DecX\AKZU"
+    A$ = A$ + "aoQ0nQ6IP8Ph6X4QnfGKhX7b\988daL6PBC3IRE3BQFP:PSn<ND_fe:o=fQL"
+    A$ = A$ + "eoGNgc3CJY][aMf`:00Z6bIJC:Bh8??bQCDGaa<Yd5d2B5bGc>Z1lQc\7QG="
+    A$ = A$ + "cCekb<L\0RA_?aek^:J?nJo\I3W2=gmX1;@1<3L?i7cVDF:MRM263VQgPIXC"
+    A$ = A$ + "NYlS:Lb16UB^kRD4R`?g>he=@M:F;cdiBIkD6n_2nan84NFk[B`O5h5JT2l0"
+    A$ = A$ + "j=HfP3mieVeQ^>BMJUf8V1Xd9CfHK9V1U0Vgc^4fjkl\I>nTAK4bglaYTDMA"
+    A$ = A$ + "`2fIlQBcem^RZ^LMdQ9JVGS6C_gU@h:[=9nd>_f;Oc3JPI\^L^HFVLDcLDWC"
+    A$ = A$ + "fG]fihKCHikT5@0X9^nd=RfYL0^;7m?ED005M5MMIeaBOWB>:PgZk`Ea3B>9"
+    A$ = A$ + "mFX8hc[>bUeFDB0kKfmXLhFJNOJ6`Fd_>hmeN4U=1=j@mfKn`?PWXA=fWBQX"
+    A$ = A$ + "3IY@=Q_Ka>j=Z[WWQ4SN1XWQAS]32I@9`Y7c3OH5G?V5GM7_mcfaFRdkmJaG"
+    A$ = A$ + "C;WaS=9cj@\Y[UBcQ7c\N1X?D2N2J4U8RX;aNIaQe0@6N@V88\geXY\3ka7D"
+    A$ = A$ + "_bPPlQIclkMRk<R60:JT8:B`QN]^d30dm6X]Tm3>90gNRO8b\WhMlL`lb3K^"
+    A$ = A$ + "1:MS96Q[jjb[aeX01P`4C^c?8PiEK_QHG]R?XA0RU78L9=j\FD]\WNN[UAJ;"
+    A$ = A$ + "6SATFMk0@VQU`J?9RPJ0VomB>oNBbGdFVc\^\Tf^\VFW1B9acn;QSNI3TES>"
+    A$ = A$ + "g\GFR_>o>jPc7jL1>Xh^m4d:1UQELYU30Q>JfiXKFeFnmfILbYhbK3QG5OF>"
+    A$ = A$ + "5;_FIQ<f<PW5ZOD0`Eb;<9nn?\HXD00F\j]_j4<QPaVX7Jfo855bi>C7iXHK"
+    A$ = A$ + "BiKEko[[AeDI2_Lg=1dRJk^em=e0<NI<1[og?\dJIPI]<gkf>KRb6QX?Wa@2"
+    A$ = A$ + "1hR7da\CeDCNk>T1ea;9KBOTP5=5_jRYVXZ=PB0[hB^>>BG>=Yce4YIjCc]7"
+    A$ = A$ + "fZIoQKlS`l7bKno2oT35KB=@5jo=If=710HN9R3DI^mX>aBYE9CVin;WMOI\"
+    A$ = A$ + "UEcnn]GUJ=lkKgZV=8YGWnT^V]MN1>F<9VY<`jC_o\=d78_=SWl1?V1k5aOK"
+    A$ = A$ + "V7OkoC2bA30P]9M\cHKVc`nAFO?`b30TT\iQB>5F_<dSgoGj2[PEFe`nfTMU"
+    A$ = A$ + "Ljj0nO6EYNPj3X48AO=diAMLTI8cVSJfmX>YCQa8c<CWT1D3`;<Jai@\[nX>"
+    A$ = A$ + "JVkWIiHgCnk?JIik=HQjW7_j2b\GgIB6N9<d0>>SBXW_FXJ0P4]KMe7Zk`=:"
+    A$ = A$ + "4abC_:Y=D=TIPH7jNW7joGmhNg;\3QiW@L4b>K_Rjj4[e5HZlQZgmELBnBLh"
+    A$ = A$ + "HVYZmf@gU^MOVOk8hb<\TM9hOAI5aPXNc`B5GbS6<DKH5JZ48Qb?PV9V8W<A"
+    A$ = A$ + "UQo^6FBV^@3=69PGXA<e1iRK@B`Bf^OhJ?]\<@6:FYE2Pn`<87=EM8X4PckA"
+    A$ = A$ + "\^6cWG9iMjJ;LS5]`dMKgcmgX1CQFGH6`YBHfE5BW1>`9dJWfG9[g?f]b\kE"
+    A$ = A$ + "?[AbTP4EGLa9I_5<[YO[Z1RS<S6nRSYThjXG6YmB^2_b<eT1N0[ch0013^?N"
+    A$ = A$ + "C]WmmM\B1S6JkTUVM2_3k1lFZ][YglD[D?@S0DBFHLR;3RTlB@XSkcSjjNZn"
+    A$ = A$ + "Y^CmPlhR>PAYglTX\W=0NO6Q:>BXkP><6m]gAHO4I^Y89<;]FJTan0lPA3d2"
+    A$ = A$ + "D2`_=_WWWSA09K9O:CMm8LV`[jGM6JXKS0IbUbMJ>X`YWE;NH9?=miLLH<n?"
+    A$ = A$ + "L^N[i^GAJ@S9\eMm3U3j[D\FC@R3:b<3Y6YZhf6C@UXC[cE]cQ_PNNL0G3hR"
+    A$ = A$ + "8^Yk<TAo;FjO2U\;B@<l=\g?2KQ[JFfnf_HQ]3@H^ZAjLW\DUin<]XXTX78N"
+    A$ = A$ + "fCK>W`\I<JR:g1j4aNd75h3J41BP8na]M11R[Qg>dYna3ghXeCO??ZL<3Z0>"
+    A$ = A$ + "TeF`ZJ=^ONhJKGRLg;=cgfjglfccia]l2=MCLCdI2@<@;4nh;>6fTN\0hllO"
+    A$ = A$ + "U51k]6:meISGK_J0nk3O[^oN0]5^VGIiFOZIl90k<m5ed_QL\<[UhL>C006f"
+    A$ = A$ + "oPBE=IOUghn;08S>mAg2QloB_QZ:Q]]_?V^[NnBh0f\Y0`?OGjG_kAKXL;Z@"
+    A$ = A$ + "f`=OG58mQ\?Q]G<`K5i0FN6i1Yh512bfB6o?cGoolTlhlljU9kGmBdj3KJ1<"
+    A$ = A$ + "b`X7DB2D3`khhG<iCS9_:nB`Vn6QfXFSZ_48L7eLOeDLO9WEUM2HVX\LZK\["
+    A$ = A$ + "JKCkJelGkfj37W<]cj2aC9?=9h;c^mEa?BD9AOomBh:39h9]9J7XiIm?cCE]"
+    A$ = A$ + "V<j4A00U9DcO]Zko_P\enMb>5mPS0@JUCOBO];nh]DbQ?YFS4jml`8b<`Rll"
+    A$ = A$ + "h=TREBZ]1Pog;eZJbZFgH1R0_fO=E?F0<LDK8ChoJFf2`20P3cb9Y5mnNCNK"
+    A$ = A$ + "TlmfJ?b`5157MY8ke600<44ehZn[cXU8400Hk;gb@0M]GI\0]@l`FNTXK[A="
+    A$ = A$ + "cMN04d3a`1^9WfD3FH10PSSWF:Aa7UC3J8>SZkcV2<TFB=<4<4T@A77niY40"
+    A$ = A$ + "T200]PHClN?C59BJPgXNO?TD`i_YLlm00`@?T:a_[K[Kbb00\kf[5MV75^hn"
+    A$ = A$ + "O8O<H<JAlikVK]Ilcj8?Ki^UiOK0DcC2F:obKUd9d@MXQ`Q>00PoBjCEM9Hd"
+    A$ = A$ + "dZ`YT^4gYQiGJ:hK?L]\R\_ahAmh6XUIL8Q8328jT6[FXFZOlf[8[;>n`4N]"
+    A$ = A$ + "8fT9R4P38W;B00Da000C=IEU8X603A<UaV5=ML_]cSD6Rk[n>LWY9cNTb9@X"
+    A$ = A$ + "X@UeC__[2f@9UGJK6om[\mj2F>9njF=N2^nX<FDkai:JN3dXV1R\0gWI;7?["
+    A$ = A$ + "0ZE5Inaf62n8H1QlUJo:PDL4cZZ<Y_>Z4m^X@>9nJYM[9VURWf`B]n4nOA<@"
+    A$ = A$ + "BGhZW;lai5<QnNa3<>_NQ008CB6:5U2SVlA_eK1b\ZJVd9;^8?ZhR\J30hoI"
+    A$ = A$ + "d2h0Z?PARK=diE[5eR[STAG_MJQ3MB?3kY9bb0Z1@^kW9GN>MY8M8G;94]Qd"
+    A$ = A$ + "gjn]0D6^8JgfCj16E9mXG[hXSSE>CR1EFIOF:9UN@OJh5]:SEZZGR]9NfDD`"
+    A$ = A$ + "<c6_<TGK2iEULlV67m<QAYF=ADUgCnhSbL4id4QjPoNGXLRNUKXjoh:Ya>0S"
+    A$ = A$ + "NiFJ5aJB4VK_`CI5JY9lE^kWO0g;CSS8:E]]:n=8JVKPndneQ>6NN]=iXY8["
+    A$ = A$ + "=[Cl07P?XAB@28f1]<3^eX7gDGO<gA6SV3m<<1?4Z82:1JCm<<_[Sce_MJ@R"
+    A$ = A$ + "iS1OoZiOhjaOjQg5<]RoHbif=<ZJ;@1dKej@iL_3A`N_3LilHjCREIoa2cKk"
+    A$ = A$ + "GnE]A[]GBN7@^9kkc;JZi?eoI3L9fc32ei[dW<J1Y1m2n6IVlalj=]>JGnc<"
+    A$ = A$ + "a:D\[>nj@7h;CGE69f`PlD<RbUfW2:I9ciU5URj5Y4ke9_iU]Xf^4SKHPMX^"
+    A$ = A$ + "Fn[EOW770h5JT1l0\3dB@o`eeiFW2KC6mEc<@SN]Y@>XAR1U0W1kHoU@d>oj"
+    A$ = A$ + "gV=N;kbn<Id]gc8Yi;VLE?D=c0CL^M7hM7:_:Pm2n3I6>Zg:nF\hlbj]J5nc"
+    A$ = A$ + "Z?RN8ZgIaVT0An\c8_=k6JYY`aJci?WFSAkSMIG<50S<\H;ce6UT`j@h9D^9"
+    A$ = A$ + "C4Q?>X<;m;UiFDDUAQf7YZXU<5]nSJmj5m7X=S8]SCiW31650k\OkC[d[E4A"
+    A$ = A$ + "Da[B0Y]`__]E0h?JDcRA04CTQJhffLcX>_4WXYCUaCBR1U0\H3S5K[=S7Z]a"
+    A$ = A$ + "G?VUElbKnjfKOO>DL;bT27UGkKX\V441UlP[:aRLQ>lh=?W2MCl;PNWa?g^I"
+    A$ = A$ + "G_c_RT34CFlPL3TD:L;c:9J4Hl]e36:<\Do[XXT4nJSZ4=HocO?F_GGL3k4i"
+    A$ = A$ + "UF40mgTOI@hfL5b82APPVdkcDaK;gAW=ja3?nf]_oCU=iMmQXCoCiGio0h9J"
+    A$ = A$ + "4C;YJ6BBjlbJ1i@_iLkFZ]ja^m8c\C0jI?ji1QBPJ0>?n2SMbfScBG_QH=ZT"
+    A$ = A$ + "@clTZjV0I3ROekK4\2_T3194FBkQ8WXleJNe_oMJ_Ve0:6doGEW=JZd[AYeH"
+    A$ = A$ + "fYVY3ma?\9?lMGmbifLE<K0<`8kn?Gc@kT:NP`bbgLc3CXgUV;Y0H_;6:k\4"
+    A$ = A$ + ">5h[0kI][A[=DVc`NXjGgD\<30`f_kk[cZF_;0j12eYhSK6e1T5ENeo9Egjj"
+    A$ = A$ + "D5P?XA66VSd`:SE`>`meLWccceI<6Ra>?[c50Y9CCdVS6@=0[FkA;6?nWW9S"
+    A$ = A$ + "S;fhaX?F]EMNVea8AgGWKXeeXG`C48>34ni;^mFh6oL3nIL@M>XF1g[G27R9"
+    A$ = A$ + "Nlc\;fokm^=nXPcPL4o8mnUfDjlcI]ao>QY7G>6NSo[>TAXSNdmLdMLWWkM<"
+    A$ = A$ + "QLkQHAPV1CR7i:1`SNGS=c900VPPMcP11LZ`cFf:WMIfalXT71nXfoGmG@i8"
+    A$ = A$ + "UdFD>]?:cLEdRU;51OH=0haI<;@644@K5Z5m797FNM2MG_I\0eXDjPN300<="
+    A$ = A$ + "TEEB\c000e08?iIBFW_T\1CjkYW9al\MkJ\4KcldATB:7_TR9cXG=RbbSXf^"
+    A$ = A$ + "g6<egdD<2D]iHBHHU51\8DaTA8J]1YC23cb61ccG_@HIb0DIbXIH]>;oG9^D"
+    A$ = A$ + "LkU5DBX`L09g4UH9R0bm7ie[PEjLHF3<R`]=XSfEQf3V]m=AjnKYG]<i@JPB"
+    A$ = A$ + "Vb9iI42A8F6\iK^B0;j0`_E]<Y9_j\\Q7j]ongQY4h3JTSiPlf35T36Z[6m`"
+    A$ = A$ + "9cm@?[S>T7\aAP5d3cHJ88f0Z18If2Y79GYkno=oF\eJNNXR^gUKWNV3c;I3"
+    A$ = A$ + "TS_:hRigMoc[0TVWO[Z2nZijY5Ic>CXcd=k_>EOhVn^f3BFbP8g9YaIWBIL["
+    A$ = A$ + "lR53TcA=4]?_F][X@>[iSA;oeChlfUg\iEW7egfW=SMJLV_SVIJ?7@:0Nj14"
+    A$ = A$ + "?SfiT:ndNlZL>mP[lO><^UVB7n0_gY3hA`IPR5dX7Po5Da6m0hmITSX0VJAR"
+    A$ = A$ + "BVYM=naM7<_S8SeUJm<CC2UPPBP^4NceT@HcggE?^>io5n]l^]oJC1??lV\O"
+    A$ = A$ + "8<XbWklRc1i0aohE7c^8@o1SUhdeZ\>Mdl4kfL2KXfZ>=316e<FG1G=6lDig"
+    A$ = A$ + "da5A\Ygk2_cKV3^K52\FnFUPm[e1M;G\DT`c<Y>`9RCBhCg\BLlI@jd1UE0P"
+    A$ = A$ + "ELBmoN;3RF:3NTW52A2>1@b\d9_O\n:a;026Ti:;Dk@5V08^j;>8bkkVR9PW"
+    A$ = A$ + "XA3@71@\R\jC=AKf8Zk=YY8;eS>aPf>aPJ0FLjEhV4OgfI`6?IlSoNLfhTC\"
+    A$ = A$ + "L[ITkQdbSk34MRl`IKGIXnkaLI7hIWYAf:JN9LaCb;g1b?MZMoXW2mjTF9G?"
+    A$ = A$ + "cUPaD8QA0iJZ:c99:N;?YH[IH\n_RaaT:G`8oBW:bm?S4i^V8h]PJXM:8o]k"
+    A$ = A$ + "?:=mWU;MXhb3d_X3;Oj4N9C7mkT2KEKjm@;IcFgdm\CWACU<nFRZW[H^7@7B"
+    A$ = A$ + "<960nQ6e070O0R@=d^SIUXW94Be>@3XWNNN>5D<X4@3So_goLT`nW0emO^hW"
+    A$ = A$ + "QFCA:AK?3XbcRii<7`;f_ZQZGen?k?:67b5]82L9MjF3[idDe21a6W^EDL_n"
+    A$ = A$ + "MYof[2RBni4C0DXe899<1V\e<mNf4[1WDi[abWCJKA;>Zcc12AJ:^bE7N]Bf"
+    A$ = A$ + "[B9HgRFZOdNANU6SEj8Am^=AXmdIoS^]S;b6=[<j:JEh_S_94KSK^G[81HcI"
+    A$ = A$ + "TW<U8D@@eFbQmobA5Ck=gbmeCFiTC\U]^7H1XWIX7hBB11n>T8bfo];9YWR`"
+    A$ = A$ + "aTOS>S_KEMERW7]nJo9KbhTJR]bNT9CZ=E=?ZL7TBCXQnJWEdI1X\8\@fVjO"
+    A$ = A$ + "Ad3Co@h:Z6lG8MfZBO=3_3FTXconf?=f^2X42;OKF7SA7Z2=TI6AM;GH>Q6R"
+    A$ = A$ + "8ck^EWnkC`Nl4CCBQQ;AFOEo]eKNIADi=4gb[nFf8EZc6[8D8]o7eod0fPU8"
+    A$ = A$ + "ghOf]^6[<0cI0@[`8e`UX?0T@@200E200f>LhJH<1Tb]:GKiC6^8[hH[_7=W"
+    A$ = A$ + "\70mnd6Tn00A00j0@:YI<];<HcQ:`GaP94AI?doYj]koDa`34l3aQd`cjVJ="
+    A$ = A$ + "430`GgVN^RK<a8QRIJYXY>Nem@8ji8e]G30on@MDKho[NN1410hXleTZ9^Yg"
+    A$ = A$ + "K>l]LlUWUmfEV6^Xm20Y0k>a6P70U20P>0l[5fc<ceIQIVK^oh^?UW@gKde?"
+    A$ = A$ + "l0:T7Mdf7coGWiFkl=R50@;?e>=J8_WXHXKZ200Ck<YWNJLSlM?jjbN\C>n["
+    A$ = A$ + "<]i5i>iOKf]K[koCC_UK2XSIL@>hF64@K5_eYT_^of>Eg:SWoWgmAm<hh0`R"
+    A$ = A$ + "f400QmR[V4300DERPJ0RkmdGfFkBEOk>Nj?;c5iL6JKKS2D77M^4Xk8BC55:"
+    A$ = A$ + "]R8>T:Y\FaQ4bG<?8b@IY81Zd:0c[iIoPF5b<QIb^c9GaFB@CkFLb5aToHXj"
+    A$ = A$ + ":T_iIe1j2BDJK_oiMVl3FLK=7Blhn?A<:AE0@deLYdgKZHWj2_<?BKfM2NDQ"
+    A$ = A$ + "jL`Y?T60Q`XNmjVn8QS_>nON:F5jF@MUM=:]0FSUYg9mnN63QAPf;8=BFnjK"
+    A$ = A$ + "o8Kee[Mb<d4A]5`<MfTfa^]P6@=0ZaJcQUPoF<_7NfJmHcnAIi``MCo`DeFL"
+    A$ = A$ + "?XJDOAH<dm28Nn6[6M0PlJ3dE@_>Nn]C5[a`ncSn6U5gZ<naUJS?WlR<gPNQ"
+    A$ = A$ + "kA^oCC>8\6m`X8B=gn9j[Fh\mS0\]V37BA?7KJJ0<=9[gU<o7[0ojEcCYaXQ"
+    A$ = A$ + "?FH9SeoDikDog4c1<PBC?2@0;SgZ[=hC;;0mM`JUT=0LBRlAL6P7XA>D2`?P"
+    A$ = A$ + "IVUG=na_R=SmPH2jMNF<JL8\Y\4>0?4jL@@5`J`VcKg<WYWYbUmn<Md\V5iJ"
+    A$ = A$ + "g;SB`mMKcB`Ea9KFcI<<Q8IEfdnZ4G[R^hMnEM^bhTUASH4ZDg<Y9fk>?@0a"
+    A$ = A$ + "LV36bhk4\L?n4e=R:;bAiDS;H2kUm;KQZ9jCiH^gcThD4N1J^0O]h;kVAHdP"
+    A$ = A$ + "9>8ZfW]E?GbggRM6fI]\aSHbS>S[kY:n=Dhj=fQXH2c0o@LNffnJ6C`CWMfD"
+    A$ = A$ + "000`L50000000lJcCCe00000TGV4>[TZb6l8Oh19O\2;^8l\lB;]2o18Q82:"
+    A$ = A$ + "\db`jZK^[2<8R8B8[db:8Kk\e2k^S0b7O8b:bh<^bZ;]hFl`0k:\_^;8R028"
+    A$ = A$ + "[`2dfRkZ_j5JdPTPa^`U7X\J=j]KWc<e1C8;j]eb10b<<1_JXP<H0g]cB@^1"
+    A$ = A$ + "gLmaY_OS_^ijcf^]Va\8L[lZQ@^P@N]ZmdeM;CadMFmm4]JjAJ0=QG4>CW1i"
+    A$ = A$ + "MjDIN_6iC_8iCNmXh12DP`cUeW^Ig5[FU2E;?G;1=3]LfYEGaIc7XL5_Zj^D"
+    A$ = A$ + "2@1`?fJIL824_fN>T1V14n?[iffjSdH4H?70?Mm=^Zbm_E]10f_<d=U9NP69"
+    A$ = A$ + "8:P6ohX9K8jmF\[XLciD6;b<4JBdkN6b>7;:X4@dLDFCXBB7?C?YG^aTF7jW"
+    A$ = A$ + "e@^g3WnH\c_VfdV55C_][EVX@`NVIVIA_YaGMEhB;nc6R?^^^W>aP@8QiY?2"
+    A$ = A$ + "G0:699X]dBMe`Cn`ATAl`TVh500dZ?M4A4I>;nam^[=0kOfKIof?QVi2E`35"
+    A$ = A$ + "jMWZ?SE\jmON[eddbQVJ;c_^ee8ijB9IWij2IiXjTB1Rl[fRX<655HgITT86"
+    A$ = A$ + ":64Ee^=IiMOmV>oKg>>IbGVhnhn=fHK1XQNfSNN@91:1hKILXcLBkLSV\8aj"
+    A$ = A$ + "NO]deFk?CABKEJlNZJOUm\?:AQ]A0DmnG=W2bZYJR?Bl[DC18SC]hKgL?lI6"
+    A$ = A$ + "^7nLY6E]00=`]F^iWliO\S^Y\VY43[K47MhdDXbk??IE@VlckJIKgZ>=1?G2"
+    A$ = A$ + "HS;ZPIWHffdXB\cCNak]>E5_mPX3cdD3]k\]>0nLKa^LiEZ70[@UVm>?gWJD"
+    A$ = A$ + "0<=k5Bo<b;:]0C];AhMid\6@40PTkjYLZQSaG]jXZ<aoSn\KEG3g8o?25`??"
+    A$ = A$ + "T7YQo5GY0820`nemO7[XlAnB;LXc9OlkFnBC7001mP7bfO^>]0A00:H^=e4G"
+    A$ = A$ + "`Ga\_>KOZc<m=KG8kT1ond6B450T20`Y4Hd7AfF:Z5K=LSjoA7M6ERlOk`=Z"
+    A$ = A$ + "oVco53051A<T?lFU10500FX]KcB2?o=YYK8>lLW[5TZdjJZ04d3AAokTY4Ff"
+    A$ = A$ + "\00`Zc`A[?;a3ZSgLZO?O<6\jC:P7EP[Q[H;cJeNcb9:0@[>HYUlZO069X00"
+    A$ = A$ + "X4@5;jgjL1?IH<n7XVgSeYXTj1TCbmd3G?kik;g?InU1dbSD2M8`VjCJFL@M"
+    A$ = A$ + "4000fHFJiLjm<TJ:Xfi@<b]7NiNncWP]^kl31[bLe\793X[I<?B@3a?@K1Z5"
+    A$ = A$ + "kSAiK[Rj<mmbc5QhhjL`VfTj<\=600hJ\E@bPJ08^J<7gK=>_S=9KomI2[1f"
+    A$ = A$ + "\f_8EYZ[NeXiZ8T7AaGg7><3BoIE]SPSn[9jIATCI_FKPc??;SROhYWSd8Bh"
+    A$ = A$ + "0cHe_C_I_[nB@Mf7AGDi_c?5dTbgX?iM]gDf\oI`Te1d\<DIca879eAX4oFg"
+    A$ = A$ + "aEo9cFT2Ne7>gLa:MJXmakN?EG81<XWjLkBLT?S`k3Wm[O?nD<0SPJBh0k>A"
+    A$ = A$ + "[cLBnM639S0n78ERL[Q>_@Ldcmc\<R]9WUH1F@c20YW]MB53>Y0`obA9\9\D"
+    A$ = A$ + "74G^9ejAb_?h8;2ECkGaeVGb9T0UBPi=JV@93oUjQ0lg;2D[^5d0HL`<_FhU"
+    A$ = A$ + "fKPVGD3hAO95`]7M57OXldQdZdfnAdBhlB1JaO^nMdYo<0LDX^[HPW4S9JeO"
+    A$ = A$ + "ZUbK9XKH6XlIiSn[j2iQe_oNmYRk8P8^J5US2<DQc6:I\f7Ba\T@FB9ACC:<"
+    A$ = A$ + "I0P?XA4`38f191[cfeX7OfZgH7Q]g\NTKFKd8FXWI16UC8X4hn7S;FSlojYj"
+    A$ = A$ + "Gbi`igUa<FkUM2_h_:4mU\S\Z>LDYD?lV__fk_DU_6I47_Sih\Y^176gB5:A"
+    A$ = A$ + "5W0IOdBbeQ4Tc`2VM_8IXYkM1`UZlYjiXaJ1Zn>JWeVKO:Rn^oTOW83W=\^`"
+    A$ = A$ + "AVh\`G31UTmimKZ3R8eR<L[U?^aYkl@6Qik=]I6;=7To6OgGg?U2iPhKiD0:"
+    A$ = A$ + "3agJ3KbXVLE_5hoI4cY13g02@o`3mfI47AM``2H68;mj2ha85bPB0F[`cn75"
+    A$ = A$ + "CJ=]<[TcJ8^i8YgCd\ia[9eX[>>H?cc9am\2hTgAI?gVek^:Sm;IYB6?\NSF"
+    A$ = A$ + "_hdUaNg[8^XBbD2Oe=bEPCcL\6IW07?Zi5WIUIE_TLBi;CHaT7bma:9iNm64"
+    A$ = A$ + "[mYc5KVE@Po7HHVi6g_V2ZBTSg\dbV@k>_XgA]8JkgbmcdEdQ=n9N5[\]djb"
+    A$ = A$ + "=IPkdI\]_YbNTh5J4PRPjkHkDHU@`m3_kMGKg7ZcSN3ilAP08ml=NDF<3:1B"
+    A$ = A$ + "^;9SoTonlkUXbL_l]GmedKF?d8]_OV4j_=?;2?Q5G5_WI_oVOC^<g[PcC6D`"
+    A$ = A$ + "FjMg^BMS:<l0IKE33jQ>ff]Lhi3]FQmZBV=\]ZKb`V_gWhUS:;[[VG10<[;O"
+    A$ = A$ + "S2HH=CoNa=0PZW<GId\OkfFZF0EKG]FKZKBK6fg06nMHj^E^j`_n7=NaM[FV"
+    A$ = A$ + "HRO9e0XinScE1HcIDQ?6A`8S\fN9;^kCMck_DGnNMiCWWON7YD:1XWIX=hBB"
+    A$ = A$ + "PJ0Fjfem@Bb;fIXWn=o_;o]lCdhN9P_]4\\[lZ9K4Z@8aIeCY0_SagML9c_?"
+    A$ = A$ + "kSJEl^H4giL>f2Md3D52W9;g7UkYkL1IXHeZJ]9gEhLA92IQblob5Tl_Jg^U"
+    A$ = A$ + "2@T:Cn5UKTQ>C072d]dQ:]>P98LmCZBRQc;HI^nAeNSogiDWXOCADWj8Sm3f"
+    A$ = A$ + "`@62ZDIT@1WM^ZP[O\CJ3`0a<mhim=704dSM7>\Q_L_4@40PKhH8I]MU_Y^f"
+    A$ = A$ + "KoDA?cE>cicRH`@?h1YM>UDVP200oomNRYLLU<2X7:[LV]VAL;a2`Cf244T]"
+    A$ = A$ + "WQjKEV;P600?9?eM1JS6Z^[Vdh\I=VM8CMo8CU80<l3eAmm?ne02?003KlN<"
+    A$ = A$ + ":QIb7bNN]5hlJRCA]<XYNA[50@>@4WDKnCP^E:00jji3Ck_MD2jScSSWgbK["
+    A$ = A$ + "\FCQe;odIcQV6cmITF0_lTMBL2_O;Z8X3iPJ00`AnIB>cEPIo5=<bDC0_Ook"
+    A$ = A$ + "oLY2kl6l[>OX]AKe0@]>9NYhnHYD3G984T000`gbibGm=4]QfL4]E[M@?>eH"
+    A$ = A$ + "cmb_c07ADMNlQbfa1XMILhT\P02djQJYNomNj9_NKnNWN5jm@nQ9TPm0I\^X"
+    A$ = A$ + "Jb\5I@=0_ScK^]L?2doEc@FoJEBOWZahBjTDl;k??^]diGTW[YMfW@V3MTGa"
+    A$ = A$ + "1WP6U@Gff]NSlOS<5VA\ZPXkT=:O]\Lj5:ReJK[ZIhOfLWE7i^C[jdc>ggR1"
+    A$ = A$ + "eI=Wmen37mFFkDPJ78AV\S8kMLiU0[6_Gjho<H:<Mj38HfY?JV\7VA3Y?3m>"
+    A$ = A$ + "i27@f=dH5c6GWRVe_lPP9k`QLUDElSB4DF084hmI<041ZK@XD<oe?LZI2eRS"
+    A$ = A$ + ">H?j<F@T`8kIjAY>8X6PEco[=oddN\jScPlB\cUT:?]OPfnnFX>WUI6CfO?G"
+    A$ = A$ + "RfFN:@F1olM?IH^F0fPM@3>n1_O[bP3P\o^CbYn`Q1aBdk[:_6]3d5gcV<[@"
+    A$ = A$ + "L7D;US>5H;b\DINBZ>XId5lTe=]TRB:_B`Z?L`Rf@mNiAV=5YU2U^^In7oh9"
+    A$ = A$ + "k[Dn=<KhQc?Z6;_db4Gjk2lBYe7_l99[JOL5`:lcL\e<0h3JT041ClCSF<Ke"
+    A$ = A$ + "\KO^5I]iXFdJTm\HR4452Z1HG1mgo<4B>cO;c_>eg^i;o=L>Za_dPkJLM9j?"
+    A$ = A$ + "6gHmf2hbaZnKCTbQ4[ej6;2=^<Xee_1OW6b@ae8Bd@MK]mZ4GMEKnnl^36G@"
+    A$ = A$ + "7>[<h>^eBMcT8C:g2Sg6>N1?2:m6EHAM\Z>m`K1nd4<eOLQFK\N10Y;H87ZD"
+    A$ = A$ + "1g\YGN?IC;@b\M>cVV9TBTEO8[oeZ][lGi<01elQfLKialc2h:EM0h3JTQLA"
+    A$ = A$ + "2R<jDVNGDK?_cN\bNSeARe2dSQ9h1SB:8`>e6gmN9Om3c3M\CBN?S[1J7XE]"
+    A$ = A$ + ":[=XF[6L:MOAKh\kigM3Xmjo^D[iRAMYTkTg\eaLVA?aU_DW:nR]]B[ZO<YG"
+    A$ = A$ + "]0k`XHGlVfO=UDeg4;Ml@i4VDakVnRfoW0?UBQU<<VN5XVIj5=VAXEcTPS[M"
+    A$ = A$ + "UbHPjMK\3fnFI;Gkal\H1I6`_H>fk7?d9YBiOL:MfBXQYcSmENbCAW^a10F0"
+    A$ = A$ + "NR6ah24e1KW021egN:]A_=b3f=eP8QNjkIX\5cPBP@Xo_kQA_mcPoXaSc?K?"
+    A$ = A$ + "YboBK6SSHF3agfOZ<=4M]OcMi3JV5A]V3I>6_9PZ4OaOj><]SKN2Te1VoUT<"
+    A$ = A$ + "U\=?ekVBelJS?6Phk=Dm^doD``ciFME20TmQ0>KUH1YT5W>10bn15MEh=S\5"
+    A$ = A$ + "<8R]j:W;mIog8J_9BINEA^M[^`gZ8Cno:?2[<?F;T09TknA1FL6]8;9J48YC"
+    A$ = A$ + "KZloCfOh_[bK^i[lnG^>VS\l4]40bVAd3L`Q>54XiQ5cm>i?IZfc_gaOo>[g"
+    A$ = A$ + "Ka6B2@1iDa8gdJT=[TQ9WXT`nAW3iE>C@kN[Yn=:\[SSi4SRmZ]IC1eS[G_D"
+    A$ = A$ + "GLK0cb660G<KXbZCSXXaT0D^[B\fRohdK<<00ZXb_ZRdGhF74FhOdnJ<<RVM"
+    A$ = A$ + "`1e\OE`=NO1VX]keYODcA:10`GOQNGiW;:0XfhDemmmF6IE0HA^n5KR:?HiW"
+    A$ = A$ + "[>50Dc3MQHHE6S1P800]UlefJ]Ic?JV?RTg>;MV`Bj7cV_3ondD8?l]j4K28"
+    A$ = A$ + "20`lN<lTZ7ioAO7miX_SoIgAgaXEk4^24dS?57K?ZBZ62?00O_<o`4iakXnU"
+    A$ = A$ + "M6o[]Z6Qf4@iOK^Al`a?T2Bk?<b6@400C\^aCWdlm]8d?liY];iUjfKW?NL4"
+    A$ = A$ + "0@_@DRAgc[jL6>HS<000FKVS4[iYef0LR6dJOJMHa59>W?YI`;^YWgoaQW1]"
+    A$ = A$ + "nD;NmPkCk8BBHQ<8A200\d>ndGAh<aJ;Mj7[V;@oaPBQIGQbBO^cbOMhLm6c"
+    A$ = A$ + "l`;KRMMk3kVL20PM_6=[VHh^_REKifc\JNJ_CGmCIF^JV3[jC[WIhb00jI67"
+    A$ = A$ + "6F?6386DFPJQneLOcMc;_Nbm9SNRS<de0TXWc100Zd008FCFE93Z1`jfTh^F"
+    A$ = A$ + ";KHVN>[mLE0I=\\F6_7_B9E_ADJJ4JfoP6YAiaV3T>1oHLFc:WUdib52AE8<"
+    A$ = A$ + "07E>43o_:AV\jab8?nUl]<ido6`6V32hSkaa9mE4ki5g]:KenQPO;?d\M32H"
+    A$ = A$ + "L2^_jImY=a^I?4[Jj^dNC1T9099<Blm>Cj5L8X_fJiW=660=b<B>C=0j3Omj"
+    A$ = A$ + "eGRif53Jb<4:P?^a9bZ^60PGWa\4N0m6d^;TLk7>mlHN[g5ejjHTFX]1IVaj"
+    A$ = A$ + "@:E40E0cVTCfBNollaO[UVf\[kdfB_FG]^<=KB^NROaL[KXk]iY4LB0oI6U@"
+    A$ = A$ + "cI_8>44kZR64iZY]?DM\\G4Pb@6<o[;\T``>]AUA4g7m?mHUPkLndJ@<ZWE7"
+    A$ = A$ + "eV4Y1W96hkV@EB]Ge1Q]O@mlbEO_SmoQ`<^D`g\VfPA71dZ@S\]^R3=61mSg"
+    A$ = A$ + "X1dNQYa@H:U]eKo0Fl5JD[C<4h3J40SPEkPB6I^ehg>RAHC7;K6T<2`B?mB`"
+    A$ = A$ + "[Y>QPBPUoPL6Im;M4VflM4l?ciGZ@B[]0:J0ojaec4\]QU:XaKaf\T9EA;0Y"
+    A$ = A$ + "GURS<dMMO@9ml[7V?9FbS<];DRO2o>=J1I;QA>AVmB?L`?em1bS9hh@33]C["
+    A$ = A$ + "5A36I_H=4QUHCNLdmYgJlBgHk`2:?>DMVOTKNohCP[m87I:fnl@VU<O?1Lhb"
+    A$ = A$ + "3m74]gNY]f@W>L6M>:YEQ>B0NR6e07P_3j1j7>e9bDOXeBIHC2BMjeCba@AP"
+    A$ = A$ + "13hlJ?_=CBd_6RVoJE=c@Z9=JG<[a_g?m@\UIEcDDUW=eJ]?IfLFX1?gF\SA"
+    A$ = A$ + "534S8l?nXniJ[B[Y_9?fI2OB24l_SSI:e0`TjCiccYDnYB]Sb1:hO^jKL1OG"
+    A$ = A$ + "GPV?3M?DbhnY2\>Un0JXG]Nm=i6Gi@L3l3@iAE7d9:@N96]jL]:iJf:eB7E>"
+    A$ = A$ + "JV@Zl[4Lkn<GnW8O10LIO:6N1h3JTP<2AMS]M:P4m]gi8[]S]=Y]kE83=0Ud"
+    A$ = A$ + "ch9;a<X4hK]ThL<RF[\A_c[<:Kk?aJ>4jQD1\L2WKNUEOi:;ERfKiRUU?\<F"
+    A$ = A$ + "d:L`?1CaVTdJmaCA;=4Qe3aQZL:ee_=cN9P:9Vh6LfD[B_m5a?ALJg;mQDB0"
+    A$ = A$ + "`QL^<9X]9V_J2MZ:1TIaOV6m\K__e[TB0TmQV1MkjQF;ZGXTVG=@?V`FN]SF"
+    A$ = A$ + "[QNWVjM^lMJPW3SacK;0fM6E0e8j@j62bNKN@=LOLOo]gRhdgcC:Oo@4bV41"
+    A$ = A$ + "@6>Jl<P;T1E0S_4CFF9mJ<VoolKFoVUPNCiA\TCEWJ62m0@khW9B;<B=D^Fn"
+    A$ = A$ + "n^SoQ7\N;If<@IBeHo:hK>[^M\CmZ<T608]c;eXl9Ej`=^BgJAJ0:@JcmC]X"
+    A$ = A$ + "eWm?=WX`B`LcNK47O29^VG0H1B[:lh<Y49_Q?Fi]=1gk3=P5`;:GgPkk=f41"
+    A$ = A$ + "d_lTL?WcJ0BZIC[_[kBCP;i[J;ZM0`@`@3;j?EAM3\`30`c__PP>3fZ<NQMN"
+    A$ = A$ + "D@\M6YocneBcHg]1Ll3N@<lnZ7T8800iMKF6BU_aSKd[dOh>Z8JoS4O^UA0o"
+    A$ = A$ + "n@ODOTYZ:5b4110XKE264YHg]_g0M\6TeP_\dSE2D\3^8]O^k4P0108=QU3E"
+    A$ = A$ + "E5jR34<m]KS88S9dkjgj[`>?<3Ym?j]R^Q800LOneWeUK9;68B_^UCIT_V^X"
+    A$ = A$ + "Te[l^@11k@V4Lo:Cb\@Y00HV=Yk0Rfg_?V4>lWoo?hAf^ND9TaJTSFdfNmZF"
+    A$ = A$ + "i\30dbC]aS1;nmVNRT`6Fd7U@402^B000N8=\<]b\XUin8MY<1g:Aj;1[_^L"
+    A$ = A$ + "5C32^`A__KPfUaQ340lQ;6;@]`^GMg_Emg[bgfaiCTmN<I<I7KC0Hh5[4300"
+    A$ = A$ + "<M@[10@enPJ0`Kg[<V_SmoROn\OVDogNCo]CO]eO]X:Aee=^[45K7gaE40TM"
+    A$ = A$ + "b2K?Q0a]E^oQ1GdD:g87T<YVdUZK8a\BgDVCoS:TKeBTT:SYNgkB5Y2WT;k]"
+    A$ = A$ + "Wa8ljj_===Jce^laM<iT4f[TKC_;XP7FI>YV[d[7@WX[Fg7]BLE]YU8h2:Qb"
+    A$ = A$ + "WGW=JTT3<00c\iBTJ;82=mfOk]_56=T[L?G<mRNKkYnE0hcI<3W3Tj;U:cTB"
+    A$ = A$ + "_JXK?bVfL<G7I_=b]GTP<c<VRI1Z18MNHSO;cDGBJW7[aX7mKHFa?mK8I[hk"
+    A$ = A$ + "DE>0H=3Y\XGL]R5jkc8e1eOMK0Pd;U46N0mPIlWW2i9^1_6J3Z<gAMXh_L_Q"
+    A$ = A$ + "360JM^\hQhU`j?KCAlaa?Ca=LeV]fh5B:f_g:8F\[J^T?IB6fb>;5gi?_4KJ"
+    A$ = A$ + "9??WOJUDCXUC8:UbX?[LP`PYKX5VPc7TJ^@Gh[nB?iUnON82H1PGXA4`3hgP"
+    A$ = A$ + "APYG=hQKUSNcV@dB8F48]@00@Z2hQ4D82:1lhn\dijW\GSISaD[9WomiWHEg"
+    A$ = A$ + "^F=_XDJ?K:MJ]:hej\>[l97jNZ0`djidVTjg=O3A]S`omk^II>CXTKRXAH[;"
+    A$ = A$ + "^m1KB_m^i?4IYa>_\e=H<a56o;`kIeHgSE=YGCG1YHhZbl<n\iI:`og3Ze`n"
+    A$ = A$ + ":fOj5XGTLO]2HY=fQS=E\@m0f3oX4I\1<1jSloeb[5UfIC20nP6U4J``1E@e"
+    A$ = A$ + "DSNL[O4I4WK3K4UNF0?HD@4D2LnVlgc;e29RVkCdc_j?nHcoL?HVhMOlOPOJ"
+    A$ = A$ + "l=`Jf_TUFc;ci<>[hKSddgfS4ojLl0_>mD[eLPfGJOA2f^]MOPDihdHa0N>C"
+    A$ = A$ + "jB^UhZ[2MD<kO_j_bb\QV3[h3=bLEcnY\?<Hldmib3cHo_R?_G\aNFlPY<FB"
+    A$ = A$ + "XSg><>oW2Cjo]`]M9f>TYNg5iQ1GOF>lBhRJbf3U\`akgWBPSF2MCII0nP6U"
+    A$ = A$ + "PH02@5bXoRN4AK\S]5]8221P\H<Vd9aPJ0nncW7:GCDR]nmCRomi=G4=e0JR"
+    A$ = A$ + "d@lNj5>oGogdT7]hFo07hU[YKfKLOmIL:e[Z78WN>?MjB<7[^\nT9WY5f8iC"
+    A$ = A$ + "iD=^\5097=Z28d^aaT_8_h60hIiYZ28[4G6EdF1@3E3049TDe_c4R4>9X[mN"
+    A$ = A$ + "b5;Z33gE0aNo3h9@hD[_f9bJS6iYR5ofAhhlF\[HCl`4ba`XgY=3TaQ0nS6M"
+    A$ = A$ + "\Hj^0XJR\l>S>C=iEWAJg0Y08c``J3D@54XNSTNULkFm>BbW;VSOg\JRYWQP"
+    A$ = A$ + "`iI9ghI<_fM2mm[[0P?B9Ti=f^LaSBNKNcZ9YEj^RM9VD[YFfTe90ihJ1h:D"
+    A$ = A$ + "94L[ClcZIQ5>ARN[?Y7;gbeVe<Ibd6P^OJ]5;;OeUTlFfQ79Sf`Tm8B`5M^H"
+    A$ = A$ + "]m33iBJUAfEG7:kMl^o4:4<[clRn;fZJAE1`1L>TeWn6]<d\4blXGPgd6>`9"
+    A$ = A$ + "0h5J40Ui18F=KmFk[VllRA^mA\[a8W36cb50IH_0[UZE@PLJHEN9fee@ok]l"
+    A$ = A$ + "7S32b^jJ4Cba0ZNc4LF62onU^Bn`HaO6gGBieQXS^;j85hcKM8bon1QU20SY"
+    A$ = A$ + "dWmjO@Q2KLWE4b9>8Wcm=e3]jl?n=28IF;BabiP8kC5lg9nlFaIU]_QFVaD0"
+    A$ = A$ + "HFSTGoSOgoW^o?2I`WM60ooGgjCBdRb^oGgMkof<jdG]C]0<cb0FdSARARZ7"
+    A$ = A$ + "=bP<oG7hOmO;<MFNT[i^1Pc0nM63QbD24H\0eRn>>0m]2fSVSAX1YE?f;VJ@"
+    A$ = A$ + "K600XS4K000D3`_aUOK?lo_E9KnOaiWZgjf^RIMjUe@D5XQ02ej;RRF>][S7"
+    A$ = A$ + "S`mmbQSVm9LZ3We]b80cF<8jAM<d@k=8<D?Y9EYREfLEP>;J_`X<[X2XgKW^"
+    A$ = A$ + "m:;]WX8NbKen]VcMHCJZV\eMeFK^nU=3e_3ScC1n]S?JV1f29TbKP?iFefH6"
+    A$ = A$ + "MSnlFS1kUKWBXalKj@^L`I47E6WMJ`[NaXQCG^5WQY23nN63A5Ph1DJX:KOk"
+    A$ = A$ + "2Ln^bS^W]FcZ1kRNVY9=6W1D3@H9^LTWCEGo>WWjNJmi_dcAiHQj<JlLZ]Kd"
+    A$ = A$ + "T[;8mIVmKI6\A;B;W122@Mn@6B=W9Eo0oI_@g3HcC4mW<9V>\b3F43`kDMT`"
+    A$ = A$ + "1ng?d08VEUI]OQh<=6Pl75R=bgY\QCLV0IMh?eN5R4=20YDEeJjblDSb1A4_"
+    A$ = A$ + "\i0lMG6m>WZk`3?T?9SEi?OA629\jI9`\2L;1olkGFMAMDAnMdH7Y9Ib<T80"
+    A$ = A$ + "nP6QH3Hl7d;UaG=hfeee9jE]MnH\9e10j5_2hAXL8X4XMVJG49HG7idmYlIU"
+    A$ = A$ + "=oV`81?[lVK[QRf;WgXG[MPeK>:D=iZX<VoTWCN_iS2M6^V==DHk2Q_hWCUN"
+    A$ = A$ + "eb7W\Xj4kJ_1g[BjlCh]ED?:nQ]:I9iAQNP6RP^WXk>dIeggLGgMWHOT2_3l"
+    A$ = A$ + "1ZhCgFD@6Ke]G3PTEPIc4bdi[_HgTPUK5TDDJ2`=Fo]^8md2VC60NR6eP8Ph"
+    A$ = A$ + "6X4IAOkjNGTfPSl0K21PL\TP7<XT5X4XC]JCCB6S5QB7_cdbCT^mgbZhmmZf"
+    A$ = A$ + "088@UheTCD>RmKScFRIe^cOjZ;H[Wg^mgRKa5<[omML:>YloPK`SUBGa30@B"
+    A$ = A$ + "DLkenL7>R0WHaidEM68T]e1RDW1;\2VfD7I>68`G7?4;YIF1a3l>HFa6?Mb1"
+    A$ = A$ + ">>a]moXaS=HeDnQ9R\S2_PI@\5A]J>DUc4TQh1?MfA]882PGXA6`3XOPR8D3"
+    A$ = A$ + "h]H[WC]IMDWb<=nfBR1U0el\iASkcX^O[fOhnA7edmZ<gYY4N0P`8mkAS;ed"
+    A$ = A$ + "NRC\aEB;j8an`WbW=:IEV[I4SlJ]NHbn>6WSRh8lAIocL=S5LhDg8E0;0Hib"
+    A$ = A$ + "EGMZLL[VSFY30R9[<9KdkGcDWkY<S0dAMW_<d]\7@S5Ie@hi3K`jRK2K[JMB"
+    A$ = A$ + "Y\kC^D^Tcl;iiXfl::RCanm9oLXoH?T=JW9KdgR6fM6i9maM3EdkBlUL\oeo"
+    A$ = A$ + "DiMM?OOMN=:ZELcJBP48cHXa3L1YT2PT[9L^UjdHNVMbWo?<HSW;9>1AM_X1"
+    A$ = A$ + "SoINSP@GPPJBnC<Fa\E^K[S??]ED3P7@k>ZK:2lTm6WAWBgIjHCj8AH_dEK1"
+    A$ = A$ + "?`0`QK20`7fo8^kKTQ:18\k>:]aGJB7V934?:OddCW@[0\3Bh@eOfEUL0RlG"
+    A$ = A$ + "UFDh=CMN1<4^_c?jVHTdKFKDP4VI]X6MR[LQB6`iFOaVWKLE0@`?4RQ2_S90"
+    A$ = A$ + "@40PgH==];BU87E?afFWHQ>YokFeJ;M1<D4aIMOFaa2X108FkUNKj2X]_[Y="
+    A$ = A$ + "f8mlA:gfA=gYNMVH0`@?f:Ljk_Kj]6820@oncOfEf=7Z>IB81=iBA2HV<9T0"
+    A$ = A$ + "lc3i@Jo3WeBP800Sim>2E7LcO2og]koJeK]RdJ<R9J0mn@e6]Wn[VSU8;00^"
+    A$ = A$ + "i]^fF?HdKBYA_lZC8:jV;GaoK:Jiem?8\Bk=g<C<Dk3G\3^:Nea<eP4Z32H7"
+    A$ = A$ + "0002n>gWYfXOE<VZTNiY;O\ZjcQkD[BRaD\li\S>VaQ8HkHP0S5lF;e_?W\l"
+    A$ = A$ + "SGalY_]:VkJhUCcNnPD_TTkPNT00X>IE5dF000e0dJVd3=TjmPmVNV^C;EF?"
+    A$ = A$ + "loTAjMY7C62=Jh:4EELcR5EAA]F96]]oDNe^93L>>SGbT89h5UbQlOMa]Rnm"
+    A$ = A$ + "47Dof26aDn\7]>f5<Tm3MgS95de?THENNMZgU?[;dkOa[VmVWQK3nhhomU6E"
+    A$ = A$ + "?Iec2XV1H[\Y?L2\_FlAaQ<dOCJ:32`d9^80WQ]0o;<gjbiW00@h1A]e;SR]"
+    A$ = A$ + "@n0S\8jJCnY]:[C0nO63`APe1Xd<WU[6l^gI4kA^ilV`iTT8=@?L4S9D@1:1"
+    A$ = A$ + "N;^^LV8aL?LoC??AGc=CC[A=B[meBIikHEIUTSfcD>FMQ48:Mm`>S:o7S^2o"
+    A$ = A$ + "T1WAnYHd`TDBL_8=JZ1_\81]lfA;?ViAC1LVIhCf^iZPR:I8UBOQ9_[Efl=l"
+    A$ = A$ + "N2cAL_l1<2@J4Y9jLX[ShP4CW2lF_\Wm_iVm?O4jfZBfZ`iZ@fkJRBJ]ihCa"
+    A$ = A$ + "RM[i1OB0W6RUVVV[@FP_WA>N7Ph144=:gfgn17cM7IX^N^WGA^Fb@PNVY9JH"
+    A$ = A$ + "11U0[VTfRmF]dFnoH[;a^K<[F?aNoc6;g7OM^iaOE2MA9<[f>4UQXMb2DAK3"
+    A$ = A$ + "Y=^WI8YW3e=[`6?]IZjmePJ=;aj2U:lDHnjPmk;hY5bfcm?LS^b=TD\K8G25"
+    A$ = A$ + ">L@2JlGC\IK[jY]6U1I6fgJl^0PW]KZaMTI1eT7>DeTcmj?FVhgZA^e8RiKB"
+    A$ = A$ + "hSI;<DCWd01X]PXgO:Bg6O50nQ6Y0?Po00D3MkRL><@<7@>jD3P<6VPcB21E"
+    A$ = A$ + "0OY;KkMamWZ7CkOi]kGCbJ`\^8EBMa]Y69dW@D0bT9G9fF^k^eHaE5X`;Mhm"
+    A$ = A$ + "l[1KAi6SP6i>Z[;O<<VW;Pe4P5ZE^UUdoQF8\^AgkJck>j\H__kCYCBMj]7E"
+    A$ = A$ + "KKeg9?JDFk@n>g?7M[W82SM]Mcd^TIMNSaTO7QLP9i3\NFFWY?6Jn9BFLle8"
+    A$ = A$ + "PYKX1[c\Y^30nQ650O@01BEL^6Z[N>Z73KgbLdXKB0B3I?_X=cFPB0RYo][K"
+    A$ = A$ + "fUMd?oNaYLJBJ]WYK5RkX@HHmZDnWFf38]iLEVTXg91aCk[e=c:@DiO@i4An"
+    A$ = A$ + "X2gkK[;NO=a3T6XmZA?G[=9dVK`Yimek:>ZHnRO?jc0`gUi2bYUMVna]1Y6f"
+    A$ = A$ + "@2TgLgTIX]JPGUFRe35I0;f]B^NJLVMA?>I[FVh]Kk`3V`9GN2mE_HVlfk5o"
+    A$ = A$ + "YkF61ldIW=50448b10000000_fldDA0000`TIJ\MelK8P428OPb:3S[]cBK`"
+    A$ = A$ + "R4B8Q4B:ZXL]iJZZn:B8P<b7ZhRbkj:\gf;8Q0R8T`2<\0^]Ek[]FL6E9;A3"
+    A$ = A$ + "315MJ]97k?_b??id?V8^[EFaHTY=RD81XWYGX7E@A:0BG\7;GcaEVTGH\Nn5"
+    A$ = A$ + "e3=Iejm29LS[j>_WeJ>2bo^XDN89GYdI_027cXHW:Kbl[iPEk:^ICEMTROgS"
+    A$ = A$ + "_7Uf55a@m5IDg<;a`n\50a\^8=ENoE_[?>C00P`5OjE4NlSbZ50;E7CMENhP"
+    A$ = A$ + "Ujc1Tc1=P<`<cEb8_ia^dDIckWj^06:nndHajlVYB?@9__JLSO[UA2]dBeVJ"
+    A$ = A$ + "ekC]200olHb`d^YmV@3210PCj][QI0?3H_c[=k51i_8\M@Jf6N051AL88l\o"
+    A$ = A$ + "Z0P800Z=VOS8mM>kC^Vi2QUa[Ek9W`J>?``@25NlmKnVD0110XWNaJmRh<M5"
+    A$ = A$ + "cRN3MY;NFDjUCUMT0@@?d3efOo[d24108Z7jZhjZEiEdJ1Va]h1]_BWbWBC0"
+    A$ = A$ + "<d3i@f`[kP3`P00X9]JamPMJl^SaaSaM2Lm^S_M71@`?6`9SkYmD2BM10@jY"
+    A$ = A$ + "7oke:QjhNZLnZ]cBYLlOKBBcm?HAPjK^hB0cj`KV@kO:k`8U3B00`gbn8l8="
+    A$ = A$ + "ZmFIWP_nSGJ`LZ[jD?\QDTKam?ia]K10jI67PPN7P0]ELG;e[_I?iTgFklgj"
+    A$ = A$ + ":>>4d>jJPeZH_X10``eH`Z41e0hVXNWB?g`ZRnV_fQ<X[[AInO4d>8mZeZBe"
+    A$ = A$ + "@AMG_IL<nQ]O6_dGY@@Y8P\bhEXE67XUaS2;[^R6eZ8XiBg9H:>1jd5Do\A@"
+    A$ = A$ + "C7^>`PLVXdVOclFJ57d>mU^NFGWJJT9ahT>KS74A2>f7[Vllbo?O65cY:1n\"
+    A$ = A$ + "U]hWVc8Zn<Kd@30098=7?;^FZLP]En4SEQ>J8KWCOZQ6BN=kj410nO6]HN8i"
+    A$ = A$ + "gP`<Id]Oh7i`N`@d4]Cg^g4PL4V13CK117D3`\memNX5NiD?H=O;VdajJG4o"
+    A$ = A$ + "d?ZT]Cfifg@54NHR_BH@_>lbIb^]I40;n9JVI?EPa]nXRD5lcUK_R?OTSO\8"
+    A$ = A$ + "cmnIY_]1ne4>gk>o7QnCI3m83]1]2kBKQ:=<NBNh\33:?@Qj0jK51gBhYg<d"
+    A$ = A$ + "o?>2V?D@@GjO4f[Alm_3RKfa3Hl:>8f<cFHJF[OCDaIf37\eUb]K6Si83h1J"
+    A$ = A$ + "4Ql0l0fR6Z4lZ1gnBGLhPIL<X33iV=edKbTLTPL40E0[oL;S=o<cALDSAKXf"
+    A$ = A$ + "4oK:]8YO<eSlak=L<hTeZ5LNE8Qj<oRC6HNS0bIETiCS_[SS`42ND`FkE`m0"
+    A$ = A$ + "@F7Z[c[gAWY31lm_Jg<^;jl<ngjATm@]:PjMXBG\J:Qh4VcD?P6UPH_CVE:D"
+    A$ = A$ + "BC>3Q]R>7QT7g:K<Bl[2F[4Tme;NB`mhLkUn^kgooQF9X;Q[0`cAlnUO[h60"
+    A$ = A$ + "nQ6U07Ph6d;PL=d]Kk8Fi1Tc7BF;[8UI6c4lZQ2bPBPFBJCS]TQ7GYm<;gN8"
+    A$ = A$ + "fL5CBg8VT`6nK;Z5bc0fM>_Mo[QhS_3^HMbi7g\6Ib9fjm?Z]kmE>CGdcIBY"
+    A$ = A$ + "N`Y67@LfjHf0eEVCFO?]]eiCMOkTbO20Zdcd0iKSDVK82l^;R^4EDbX;L;FD"
+    A$ = A$ + "3N_;4hVkmGPRDgL?[nio<YAS\_>A8jSNY=EB2k?UmJ[b?NRf60<mn>D_m5P7"
+    A$ = A$ + "XA1`7P0DQ\hOKkCbH_6RaJkQ>=HTPRRNV8;aPB0[>_7kCYn\cg<>O]dOihT3"
+    A$ = A$ + "c`M[X6;7EkVIc\A5HTB[\ZJ_\JYJWm^UFFOE>=;gGLLbUmU@B:>?OeaCWCmb"
+    A$ = A$ + "4?gcEknbKFD29@ZaKa_0abRGn=QNK0X<VWR41>Sg<Q@on\A:60biWFXiEOcM"
+    A$ = A$ + "V[TQVUHPAc9XVUnNKc;^LQfiV[em\ccKD58_TiRZiJfFC[EZ07[<hESUl:P]"
+    A$ = A$ + "WA>@9J322RJEUJHOlfWl]9:_MOg7WG?g7[HEc28c``d@5U2:1^7kUFjiH^De"
+    A$ = A$ + ";A?RB\iGCLj?]CK9bhokmhhVcB_1V8bf764>jgKHf;kNcMk=Uf\7cH:N^K2^"
+    A$ = A$ + "YbWbTb;ULVO[a4ka=bTjnCioWNT89W8aoiONoIA`5YD;J47@84a<dijU0><B"
+    A$ = A$ + "o6@61JHE;70F4R0a6ATk3BXN:kd5R\]ZWYoPY=P?kl0\eOkl]]oi^4lHQ3=o"
+    A$ = A$ + "Bmk]1=1XVdoO;B:04d3a@JoV?E02;008YWY]nN>R`8JkN4KdMaAYA>egeT[2"
+    A$ = A$ + "F@a?T7I3ofYe0410XfgUd\;^_a\Aog7OemiD7S_=?6U=1@a?47Q66CIF2T20"
+    A$ = A$ + "`bgbLHlB>MNm][IOUdY>_Vk;L?K42@a>45Ek_=22440PeMhNH9BPGhE4h5NU"
+    A$ = A$ + "^DfUjeZljWK]2`>@nLF450410X:07U>GkX5QZRMjk9gW^D;iIM9<KJfJZ`@@"
+    A$ = A$ + "44?hk^?AdP=007YVKR\ZeNMKi4Z:JOimAh>[_AYA?[kA7nOWbO53TSC\G@_W"
+    A$ = A$ + "CfLGdJX<00RWHFaLSWQSCT4N@4h;>\a6U\WVi[2oRhLYBQD0jJ674;IQo1J]"
+    A$ = A$ + "U`RJa]7_nc7We;mMo<gj]NfHg`LZ400]K00PZ9[ZT1e0Hj]ciNK8I_Nn]nk="
+    A$ = A$ + "25B5mP1:IO;0_8j5ESa]oNf>Lofm?hjnf?fOPg>C3UfLn`7c1lc^h@V_HbM>"
+    A$ = A$ + "Hno=`iJn3<=Rj;L];S=mf=\jbkMDeRZ^4RbEVWoXm<ke`Fi_mELjIg@=Cjem"
+    A$ = A$ + "FkDjck4aW5Y]^nKZ5c09e1h[<_UH]oBWM3]e[GTPj@>YAKbX1>AH;c=kVKUC"
+    A$ = A$ + "5@aGdcEed059L6j40hmId2h0ROPBTT^V_VSD:;\[mXS8G89IdkNQAXT1D1DS"
+    A$ = A$ + "TN^JO1WSSUbjOoYVTXml?9a4Z;12:_7@]dA<=QeLcY9LbTE2_d`^2@GC;POL"
+    A$ = A$ + "KLF;FY::TN6hJB<>W?B1cl5XRb]B>N^Y:9\M0jmSK=BX<?EQYKY@=ETU9:^j"
+    A$ = A$ + "[I:F<Gkk@DWm5HiX_g@gQ0?U8I9UFBaNQoB>1DQ][M:QHT`CfCN5_TC1l8HQ"
+    A$ = A$ + "LI>e0@iMa\`io^be\<P?XA:c03b9F4T8g[6m^O\ZW3QMWMZUSV00m<><AX<8"
+    A$ = A$ + "X4Hm@Rfonf\PR_G`4^Y?_BdQ9a;IRSESj@6MbZe@PA;[j4NX>3E_`jIPRJYh"
+    A$ = A$ + "G_4NkR:cNd:8E=EO6fAa?Y_EjKU:Z4bLLjFf?;17j7>a@[6ibCK:TYQ5CX^X"
+    A$ = A$ + "JY\hbRdZhhOW3]gGo<TgLNnLaUl<9]LYCOno^GgAJfbWJ9G[YiHYE:2g5a;B"
+    A$ = A$ + "DGGGK2iagQQV4l8>a`BoR]ODCh3JTBj0h080mSkF_R8Z5[^UI<1?X4413h;?"
+    A$ = A$ + "WjAo<aNSacQ_mm;_Icme]5_eh?fhJm2FhE`[FJ7YKOW8baiR]9I?^=ce1fG\"
+    A$ = A$ + "mND6bJ1AeT?;ZSP6O\7:NT`>E4ab0`JdICN;LQ5lQ8RFHL>GNNK0hTcbDIS`"
+    A$ = A$ + "N=Ncij87[cY8LA0oc6]e_IJF?f>T`NM9\dUe8:2IPX>D7MFFXXFn;?>8W[6P"
+    A$ = A$ + "f>=SkfSGXA6`1`1\7\cQnf57c7Am<[NgS`8j50bR?IbD;;;;`0:kL7VkLb=\"
+    A$ = A$ + "?[Y_hamKNM]iW4AA@Yc^ELUIo58X6YBkS?3LkbhKcNMI^DfGCHTiUPbd5T9;"
+    A$ = A$ + "4Xi4>BDY_^mTKW8KijDY:]3<3;ShBdV6AVGDIIC^\60Pj9hnI_fj`HO]hffD"
+    A$ = A$ + "0h5MgeW^g\[>9\0>R\m^R6L^a7U8RNNhaMG6b0?fTnJc^c3P8;WT0HeIDU[T"
+    A$ = A$ + "XHjB2jl>5BFL?ZVklUB5_Dom6W?8\Kmfb4@6f3mlP@A950;l?=ghCn:MLVW;"
+    A$ = A$ + "N_VUVThfgm6dMiMcf6MG\gLj4?XRe[bMY;FgYk`]nZ=F2];ZlljaiVfZeD:]"
+    A$ = A$ + "g>`<IPb:jQ?egD>RS?QFGR00kC]F:GK8_8W>[002VOZN?DinS^9c30IbceF?"
+    A$ = A$ + "<f7FQ9[oOMAOeAF95V93?hdE?3D5@0MmoM8en[d;0HO5]MlWGN^N7H39ePf1"
+    A$ = A$ + "Abe^8d0mlhjAR`ZoB^9@40PFFfSE2enlKhhSZjkNb6=liGiXAfI0<l3iAfnO"
+    A$ = A$ + "4Q42100HGOV;BlZ;5Roff8PSelmj[hFk_Ig44dS[3CKoaG2=@40PLb]^IN8G"
+    A$ = A$ + "mIm[MOi;RTO`lQG`l101mHRaCaVfkB22P00T[UHf8?cc>OR3KB6QiH2lMThN"
+    A$ = A$ + "a8Ki_@`?T7I3oADf0410@[ghE1:Tg2:Tik]bRG]mDMDgR:31m8Z@jZWB8IC3"
+    A$ = A$ + "0`kNWOVhb>KdHdVCM>jakl:hG<mbYknoH7N[CD1oB<0cl`ERlmnHki;Z1e00"
+    A$ = A$ + "PPE_7OgI7mcZ;a[j\7Y_[[GJO^EQEcDO>:Kd<>NceD?1jF6g84B@e?RmV]NY"
+    A$ = A$ + "A@]hneCWCl;N[ZO[WH?]^EgIVa2TDRmfNK00ZV<KA6D3P6@HN6dCAMgLFOO3"
+    A$ = A$ + "a^nBMToQkjn4=jm0RX1]Ee86KJb2IYfaDR<5fZhe:]I9SHEbb3cHUjC__\2]"
+    A$ = A$ + "C6Y;jCU^3Ij<lZfDfJ5KW6PJ>E^DUm_^:G[_1M[>QG[^m5k6_MBPCIbTacBb"
+    A$ = A$ + "8I1>6UL9OLGiIm:3@b@gi0m3k=AckLd9o[dYSC^GBle26bkUB_LkWSOkAM4Q"
+    A$ = A$ + "D6a=U[C7LaSe0hiId2X1l3X>J6nf_k]DF_73aQ8_`LkP>bIYn8SNnFR5X2hI"
+    A$ = A$ + ">gWo973AcgonehmFg42Qc\IK<9Cde\o\>RmP4OFAEU^dk88H7]>=TmN?7o=="
+    A$ = A$ + "@]J^RDCgeD@EbA5`6R2jcH3SB1OhK9j]QHQ5nU0^Ra4f6N:UMRWoSC7593=U"
+    A$ = A$ + "TVTOlR8]ZCO6YFKPbQcI??[h\bLX\VmH?[YVNVgLD6ShAC24K;WZm;A\Fk=H"
+    A$ = A$ + "`XAcTCSG4\UUE]]^NZamU4PWXA4>14gP1VfePKKDO<[VQ8bjNg;9g`>:4D2d"
+    A$ = A$ + "3;gTadV^JNaCCmGJNocCU0]nIhQcNk;EWN=E]bA<M2<[R:?K@e03QlNX:5S<"
+    A$ = A$ + "c[U?PML^06V8IG4mg2[RD?<RdJZJG6PlNTc7U][V\NRJD6[WHJ_hmPQXPXF="
+    A$ = A$ + "XXE_=mT39@NSD0WTC:IJFJS;`83H\9<b_PI^>W1K7f><coUhW7ihQ5jHmCJQ"
+    A$ = A$ + "4d[^MFZnIF<mKbPGXA9`08_1A13AOk;YENTI=V3bT^SEVmVIX1l`@96D2<CF"
+    A$ = A$ + "2nb;Lo6BjgHcXO3_Hhm;_eeKlj@kh5lhe5kQL4=Em267i57c;ZdVbkcJH9Rm"
+    A$ = A$ + "eAXA^a\Nin^<Klna<C\dAZg3l1\d[oiB`EZ5jeM<D:B`kP[VIZe?lTI\^1i?"
+    A$ = A$ + "RDARC0nKAK2I<>GFPgM>mA<9[P29@KbX8bgCe_IE224;3n0iFH7ZWo7QHd=5"
+    A$ = A$ + "`^RIgT?E0h;JTRCP7OXX4R:iL=<oLCMJ\Y\GAT@`RVBjiiiH5YPBP_ibi>id"
+    A$ = A$ + "hidlKJbMkLNSfCiHYkWJL3JR[:RNNbM0ie;cJd5mD=P=\JX2OlOFV5Ga\I5:"
+    A$ = A$ + "aYe=i6`_nIGPOUWnm=iXK[eJm:4:4HQI8mFSNNRB<moC7j00bko6V]C31mY;"
+    A$ = A$ + "UEDc@V8ZKU9jNeg6\0YcEYdg_IAYY?TN:iA>WnMFHK9JTO<XU_I9g6JYRIQ]"
+    A$ = A$ + "2>@0P;QZNKdP4HcIdR<5]c88XC[nTUg[omaEelSNjmU_jhlaA\ki6b]1X7fC"
+    A$ = A$ + "ZQ0D<X6PkllL?^cUHINT[T[DQ`aiA[WZh;amEJ5FNOB>T3jS<FHR4];`Vb;n"
+    A$ = A$ + "i?ico03;G:1\em8^d6^AamHLU;K14;f@;AZiL^CV;Hn17P;Qnb8\79ESNCZW"
+    A$ = A$ + "e50kLnZ>LfI5Wh[I0;9@<Nd44Vb]l88?DC>GSg?a2JeG>bmXNW]10Negoee`"
+    A$ = A$ + "\`2P\YMgfmNNR5nBAZK^UCag8``>T39j?DAZ6820@lfecN]PlPQ1fMXAcnJQ"
+    A$ = A$ + "aXMdIa00lc3APd^jWFBRP00dGZH_Y5S?\;<;C>YgdRlY]BAaG\20<\;U2\QG"
+    A$ = A$ + "gI24400I<mS<AcUJ9ohHk9SN>fDl\MfRg1031Q?=Eh_;?0X00P\^l;Fg<aDo"
+    A$ = A$ + "H_65IUoc?eU>>nk=ah>0<D4aIC?AUi2f00T<>V6S;9;\l\iS<:Y30a9T577k"
+    A$ = A$ + "WjOmdC204l3QhSmf??f5:500Y?kLgmUbmOGa;^maDaT78LKQeh7KaZmcj?V?"
+    A$ = A$ + "AiFOi40cnDEF3M7g7j5d1Z3K6dMAV00PNndnFbmc@nBP]_bRJW_cooa0Xo9J"
+    A$ = A$ + "@Y>WORVfmj0_0U]FmfnFgnP5G00<?WmDjg_jabK8oFG]jG<Bnol]o1ogONLl"
+    A$ = A$ + "liQC^aYR0X[I<WQM794\;GQ:geRnn?mcOLjCnZ:_kOe5iLVci`Hg51D9000M"
+    A$ = A$ + "A20P:;00RCY000@K10@ePV400X60]aW9L6WBOkN^BeaBKOT\JZo@BgW^;BYR"
+    A$ = A$ + "4ek5oFSRFYJQfKRh?KfjRXRZ=2^P]TBJdlZ`;fL;41YPbA[bjXNe;Dgk^0^>"
+    A$ = A$ + "MHSn9QUYVf_YYYej6LLJ6]mj?Ubfb85U:OdnAcgnA5?hEmjS9g@aF_^A^BW["
+    A$ = A$ + "\jjol^m`7iHGgKfl^>bPnA\m7Zm5[Q:cB;o]3U4464eKB=PJATH58b;aOJli"
+    A$ = A$ + "lk>W6300nK6]]5PJN1]m2R[9?gd>OA]GBe6Vj<5I5d0Z0HfeaRIOeU4k`n2l"
+    A$ = A$ + "O6cdc[fXfeWV7jO?JlNhAA0>B@NF0K=e9LmHo\Yd_d;edC61E]\`khOi6b36"
+    A$ = A$ + "a<4_CVW=He?b;@bml>\JRSjg?JTeMiidLV6E7:BM<LhKLWWoLF9;Oc5NO]44"
+    A$ = A$ + "gBXdc<D6W<bgU>@nK=6B0P:2NVe64Gj9IK\LYcX20F3TJ0Sb7]lmcP<ajTKP"
+    A$ = A$ + "8H2MZ`2i>YPWVAEKCLQChQCZgh9[5>hCjODPG7oNh5\CP[3\97B;\@21TVA;"
+    A$ = A$ + "QKA0`>Q6B3R3;000F:5]dJ28`4`28Xe29TFKCc0<0h=KIXFo[A<cDG41^7D\"
+    A$ = A$ + "02=K\[I1l<Xm800DVi7R549UBAaH162DM:^[l<5D7eEZ<P[00@7P54So3RG3"
+    A$ = A$ + "nEPDPI7H2`Tbam5040G`FCPW00@N3@L;2`_:P_A2LMZ0ka0hG<T@0G\N;l1P"
+    A$ = A$ + "OV00oYad6Ph@3ORZ00030RO22?P]@b7XQV8j8PI;@63142DeWCjAl0POVaP@"
+    A$ = A$ + "G:QS7^KmF9I]`BOX\0cnl4KSN6mT@B;0`@cOd20d9SPMKH1<0^;Q_WFmTin?"
+    A$ = A$ + "f\NMV6@KO2Z91BD@K0TG>UC;0d0H[_m<cNHoh9`XiYQ;f2`BQji7oQHL50lR"
+    A$ = A$ + "1J1`M8^2hO3lMPn40i]0PG<<gaY[M1T60h:0Xf1NmP`mG2cS1b@1==l:26m["
+    A$ = A$ + "3Q003cYMg0;1?4gY@SWgGJIJl4j9SnWDE0Dh\J>DbFdRQolf9TJhT0e>hd9<"
+    A$ = A$ + "1OR<eL60nF6SbnMGWDNH?B6BJQaaSL^N\cmHS1VkQI30bBj<\9R<H0Dcii_e"
+    A$ = A$ + "3EJ[=\N?oZkAhkLP7OQ\JGE8Y5oaTHJ_Xi:J>Xl\a?[a>;0`L?R?7oeG]BBg"
+    A$ = A$ + "EeMI7EV_GnO<mYmllYgE\UZ]_ZMOZS>BFg40R;C8IWfi2WePe:j<JJ_DGU86"
+    A$ = A$ + "F[fJmY<o<1DK]5DVOOYedNAZ?^nm]nSYi\2U[;W;CLb>B0LfMFX4U@K]5NIQ"
+    A$ = A$ + "g;MdF1n3%B00"
+    RestoreFile A$, "bearchase.ogg"
+
 
     JumpSound = _SNDOPEN("jump.ogg", "SYNC")
     BlockSound = _SNDOPEN("block.ogg", "SYNC")
@@ -3229,6 +3857,7 @@ SUB LoadAssets
     IglooBlockCountSound = _SNDOPEN("iglooblock.ogg", "SYNC")
     ScoreCountSound = _SNDOPEN("scorecount.ogg", "SYNC")
     CollectFishSound = _SNDOPEN("fish.ogg", "SYNC")
+    BearChaseSound = _SNDOPEN("bearchase.ogg", "SYNC")
 END SUB
 
 '------------------------------------------------------------------------------
