@@ -70,16 +70,21 @@
 '      as seen here: http://www.qbasicnews.com/dav/files/basfile.bas)
 '    - Aquatic creatures now actually enter the water.
 '
+' - Beta 7 (October 18th, 2026)
+'    - Fixed: temperature wasn't reset after drowning.
+'    - Fixed: night scenery carried over to a new game after a game over.
+'    - Fixed: random level features after the last defined level were
+'      re-rolled every time the hero lost a life.
+'    - Crabs and clams have sprites now (ripped from gameplay footage, like
+'      the hero). Clams move in bursts and rest with their shells shut.
+'    - Added the polar bear, from level 4 onward. He patrols the shore
+'      and chases the hero whenever he's on it.
+'    - 9 levels defined. Early levels are slower, and speed now increases
+'      gradually all the way, also past the last defined level.
+'
 'Intended:
-' - Fix random level features after level 9 (must be randomized only
-'   after a new level is set.
 ' - Fix bad guys inverting ice row direction when the hero is almost
 '   falling off (which makes it take much longer for death)
-' - Add a bear.
-' - Add CRABs and CLAMs
-' - Make creatures faster than ice rows.
-' - Add crabs/clams paused movement
-' - Make constant speed increase.
 '
 $RESIZE:SMOOTH
 
@@ -107,6 +112,7 @@ CONST FREEZING = 4
 CONST DROWNING = 5
 CONST ENTERINGIGLOO = 6
 CONST EATINGFISH = 7
+CONST CAUGHTBYBEAR = 8
 
 'Light conditions/Palette selection
 CONST DAY = 1
@@ -145,18 +151,24 @@ CONST DoorX = 276
 CONST MaxSpaceBetween = 15
 
 CONST InitialTemperature = 45
+CONST MaxLevelSpeed = 3
+
+CONST BearWidth = 57
+CONST BearHeight = 29
+CONST BearPatrolSpeed = 1
+CONST BearChaseSpeed = 1.6
 
 'Type definitions: ------------------------------------------------------------
 TYPE RowInfo
-    Position AS INTEGER
-    MirroredPosition AS INTEGER
+    Position AS SINGLE
+    MirroredPosition AS SINGLE
     Direction AS INTEGER
     State AS _BYTE ' True when row has been stepped on
 END TYPE
 
 TYPE CreaturesInfo
     Species AS INTEGER
-    X AS INTEGER
+    X AS SINGLE
     Y AS SINGLE
     Direction AS INTEGER
     Number AS INTEGER
@@ -164,11 +176,18 @@ TYPE CreaturesInfo
     RowWidth AS INTEGER
     State AS _BYTE 'Indicates fish in row (11) or fish eaten (00) as in &B110011 = fish, no fish, fish
     Frame AS _BYTE
+    Pause AS INTEGER 'Clams move in bursts; this counts frames through each move/pause cycle
+END TYPE
+
+TYPE BearInfo
+    X AS SINGLE
+    Direction AS INTEGER
+    Frame AS _BYTE
 END TYPE
 
 TYPE HeroInfo
     CurrentRow AS INTEGER
-    X AS INTEGER
+    X AS SINGLE
     Y AS INTEGER
     Direction AS INTEGER
     Face AS INTEGER
@@ -181,6 +200,7 @@ TYPE LevelInfo
     Speed AS SINGLE
     BlockType AS _BYTE
     CreaturesAllowed AS _BYTE
+    HasBear AS _BYTE
 END TYPE
 
 'Game variables: --------------------------------------------------------------
@@ -188,6 +208,12 @@ DIM SHARED ActualLevel AS INTEGER
 DIM SHARED AnimationStep AS INTEGER
 DIM SHARED Aurora(1 TO 7) AS LONG
 DIM SHARED AuroraH AS INTEGER
+DIM SHARED BearSprites(DAY TO NIGHT, 1 TO 2) AS LONG
+DIM SHARED BlockJitter(-8 TO 8) AS INTEGER
+DIM SHARED ClamSprites(1 TO 2) AS LONG
+DIM SHARED CrabSprites(1 TO 2) AS LONG
+DIM SHARED CreatureSpeed AS SINGLE
+DIM SHARED CreatureStep(1 TO 4) AS SINGLE
 DIM SHARED IceRows(1 TO 4) AS INTEGER
 DIM SHARED Creatures(1 TO 4) AS CreaturesInfo
 DIM SHARED CreatureSprite AS LONG
@@ -210,12 +236,14 @@ DIM SHARED IglooPieces AS INTEGER
 DIM SHARED InGame AS _BYTE
 DIM SHARED JustLanded AS _BIT
 DIM SHARED LevelComplete AS _BIT
+DIM SHARED LevelSpeed AS SINGLE
 DIM SHARED Lives AS INTEGER
 DIM SHARED MainScreen AS LONG
 DIM SHARED MaxLevelCreatures AS INTEGER
 DIM SHARED NextGoal AS LONG
 DIM SHARED NewLevelSet AS SINGLE
 DIM SHARED PointsInThisLevel AS INTEGER
+DIM SHARED PolarBear AS BearInfo
 DIM SHARED RestoreRowsTimer AS SINGLE
 DIM SHARED RowWidth AS SINGLE
 DIM SHARED Safe AS SINGLE
@@ -269,9 +297,11 @@ DO
     DrawIgloo
     MoveIceBlocks
     MoveCreatures
+    MoveBear
     MoveHero
     CheckLanding
     CheckCreatures
+    CheckBear
 
     UpdateScreen
 
@@ -279,7 +309,7 @@ DO
     IF LevelComplete AND IglooPieces = 0 AND Temperature > 0 THEN _DELAY .05
 
     ReadKeyboard
-    IF NOT LevelComplete THEN _DELAY .03
+    IF NOT LevelComplete THEN _LIMIT 30
 LOOP UNTIL UserWantsToQuit
 SYSTEM
 
@@ -305,11 +335,18 @@ CreaturesDATA:
 DATA 30,30,30,30
 
 LevelsDATA:
-DATA 4
-DATA 1,1,1
-DATA 1,2,3
-DATA 1,3,7
-DATA 1.5,3,15
+'Total levels, then for each level: ice speed, block type, creatures allowed, bear (1 = yes)
+'Creatures: BIRD = 1, FISH = 2, CRAB = 4, CLAM = 8
+DATA 9
+DATA 0.6,1,1,0
+DATA 0.7,2,3,0
+DATA 0.8,1,7,0
+DATA 0.9,3,7,1
+DATA 1.0,2,15,1
+DATA 1.1,1,15,1
+DATA 1.25,3,15,1
+DATA 1.4,2,15,1
+DATA 1.55,3,15,1
 
 HeroPalette:
 'Total colors, color values (_UNSIGNED LONG)
@@ -541,13 +578,159 @@ DATA 222222211122222222222211111111
 DATA 111111111111122222111111111111
 DATA 111111111111122222111111111111
 
+CrabPalette:
+DATA 2,0,4291005791
+
+Crab1:
+DATA 222211111111111111111111112222
+DATA 222211111111111111111111112222
+DATA 222211112222111111222211112222
+DATA 222211112222111111222211112222
+DATA 222222221111111111111122222222
+DATA 222222221111111111111122222222
+DATA 222211111111111111111111112222
+DATA 222211111111111111111111112222
+DATA 222211112222222222222211112222
+DATA 222211112222222222222211112222
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 111122222222111222111122221111
+DATA 111122222222111222111122221111
+DATA 222222222222111222111122222222
+DATA 222222222222111222111122222222
+
+Crab2:
+DATA 111122221111111111111122221111
+DATA 111122221111111111111122221111
+DATA 222222222222111111222222222222
+DATA 222222222222111111222222222222
+DATA 222222221111111111111122222222
+DATA 222222221111111111111122222222
+DATA 222211111111111111111111112222
+DATA 222211111111111111111111112222
+DATA 222211112222222222222211112222
+DATA 222211112222222222222211112222
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 111122222222111222111122221111
+DATA 111122222222111222111122221111
+DATA 222222222222111222111122222222
+DATA 222222222222111222111122222222
+
+ClamPalette:
+DATA 2,0,4291680861
+
+Clam1:
+DATA 111111111111111111111111111111
+DATA 111111111111111111111111111111
+DATA 111111112222222222222211111111
+DATA 111111112222222222222211111111
+DATA 111122222222222222222222221111
+DATA 111122222222222222222222221111
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 222222221111222111222211112222
+DATA 222222221111222111222211112222
+DATA 222211112222111222111122222222
+DATA 222211112222111222111122222222
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 111122222222222222222222221111
+DATA 111122222222222222222222221111
+DATA 111111112222222222222211111111
+DATA 111111112222222222222211111111
+
+Clam2:
+DATA 111111112222222222222211111111
+DATA 111111112222222222222211111111
+DATA 111122222222222222222222221111
+DATA 111122222222222222222222221111
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 222211112222111222111122222222
+DATA 222211112222111222111122222222
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 222222221111222111222211112222
+DATA 222222221111222111222211112222
+DATA 222222222222222222222222222222
+DATA 222222222222222222222222222222
+DATA 111122222222222222222222221111
+DATA 111122222222222222222222221111
+DATA 111111112222222222222211111111
+DATA 111111112222222222222211111111
+
+'Bear palette is built at runtime from SceneryPalette (fur color for day/night)
+
+Bear1:
+DATA 111111111111111111111111111111111122222222111111111111111
+DATA 111111111111111111111111111111111122222222111111111111111
+DATA 111111111111111111111111111111111122222222111111111111111
+DATA 111111111111111111111111111111111122222222111111111111111
+DATA 111111111111111222222222222222222222222222222222211111111
+DATA 111111111111111222222222222222222222222222222222211111111
+DATA 111111112222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222111111122222222
+DATA 222222222222222222222222222222222222222222111111111111111
+DATA 222222222222222222222222222222222222222222111111111111111
+DATA 222222222222222222222222222222222222222222111111111111111
+DATA 222222222222222222222222222222222222222222111111111111111
+DATA 222222222222222111111111111222222222222222111111111111111
+DATA 222222222222222111111111111222222222222222111111111111111
+DATA 222222222222222111111111111222222222222222111111111111111
+DATA 222222222222222111111111111222222222222222111111111111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222221111111111111111111222222211111111111111111111111
+DATA 222222221111111111111111111222222211111111111111111111111
+DATA 222222222222222111111111111222222222222222111111111111111
+
+Bear2:
+DATA 111111111111111111111111111111111111111111111111111111111
+DATA 111111111111111111111111111111111111111111111111111111111
+DATA 111111111111111111111111111111222222221111111111111111111
+DATA 111111111111111111111111111111222222221111111111111111111
+DATA 111111111111111111111111111111222222221111111111111111111
+DATA 111111111111111111111111111111222222221111111111111111111
+DATA 111111111111111222222222222222222222222222222222211111111
+DATA 111111112222222222222222222222222222222222222222211111111
+DATA 111111112222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222211111111
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222222222222222222
+DATA 222222222222222222222222222222222222222222111111111111111
+DATA 222222222222222222222222222222222222221111111111111111111
+DATA 222222222222222222222222222222222222221111111111111111111
+DATA 222222222222222222222222222222222222221111111111111111111
+DATA 222222222222222222222222222222222222221111111111111111111
+DATA 222222222222222222222222222222222222221111111111111111111
+DATA 222222222222222111111112222222222222221111111111111111111
+DATA 222222222222222111111112222222222222221111111111111111111
+DATA 222222222222222111111112222222222222221111111111111111111
+DATA 222222222222222111111112222222222222221111111111111111111
+DATA 222222222222222111111112222222222222221111111111111111111
+DATA 222222222222222111111112222222222222222222111111111111111
+DATA 222222222222222222222222222222222222222222222222211111111
+
 '------------------------------------------------------------------------------
 'Subprocedures start here:
 '------------------------------------------------------------------------------
 SUB NewLevelPause
     IF InGame THEN EXIT SUB
     IF NewLevelSet <> 0 THEN
-        IF TIMER - NewLevelSet > 1 THEN
+        IF Elapsed(NewLevelSet) > 1 THEN
             InGame = True
             TIMER(TempTimer) ON
             NewLevelSet = 0
@@ -650,7 +833,6 @@ SUB DrawIgloo
         CASE IS > 15
             IglooDoorColor = _RGB32(0, 0, 0)
             IF TimeOfDay = NIGHT THEN
-                RANDOMIZE TIMER
                 IglooBlink = _CEIL(RND * 2) - 2
                 IF IglooBlink THEN
                     IglooDoorColor = LightInsideColor
@@ -665,16 +847,15 @@ END SUB
 SUB MoveIceBlocks
     DIM i AS INTEGER
     DIM j AS INTEGER
-    DIM x AS INTEGER
-    DIM x.m AS INTEGER
+    DIM x AS SINGLE
     DIM BlockLines AS INTEGER
 
     'Ice blocks:
     FOR i = 1 TO 4
         IF NOT IceRow(i).State THEN ThisRowColor = UnsteppedBlockColor ELSE ThisRowColor = SteppedBlockColor
 
-        IF InGame AND Hero.Action <> DROWNING AND Hero.Action <> FREEZING AND Hero.Action <> EATINGFISH AND NOT LevelComplete THEN
-            IceRow(i).Position = IceRow(i).Position + Levels(PointsInThisLevel).Speed * IceRow(i).Direction
+        IF InGame AND NOT WorldPaused THEN
+            IceRow(i).Position = IceRow(i).Position + LevelSpeed * IceRow(i).Direction
             IF IceRow(i).Direction = MOVINGRIGHT THEN
                 IF IceRow(i).Position >= _WIDTH(GameScreen) THEN
                     IceRow(i).Position = 0
@@ -695,7 +876,7 @@ SUB MoveIceBlocks
             CASE SINGLEBLOCK
                 'Draw normal blocks
                 FOR j = -8 TO 8
-                    BlockLines = j + _CEIL(RND(j) * 6)
+                    BlockLines = BlockJitter(j)
                     LINE (x + BlockLines, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 3.5, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 7, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
@@ -715,7 +896,7 @@ SUB MoveIceBlocks
                 IF IceRow(i).MirroredPosition THEN
                     x = IceRow(i).MirroredPosition
                     FOR j = -8 TO 8
-                        BlockLines = j + _CEIL(RND(j) * 6)
+                        BlockLines = BlockJitter(j)
                         LINE (x + BlockLines, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 3.5, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 7, IceRows(i) - j)-STEP(HeroWidth * 2, 0), ThisRowColor
@@ -724,7 +905,7 @@ SUB MoveIceBlocks
             CASE DOUBLEBLOCK
                 'Draw normal blocks
                 FOR j = -8 TO 8
-                    BlockLines = j + _CEIL(RND(j) * 6)
+                    BlockLines = BlockJitter(j)
                     LINE (x + BlockLines, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 1.5, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 3, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
@@ -747,7 +928,7 @@ SUB MoveIceBlocks
                 IF IceRow(i).MirroredPosition THEN
                     x = IceRow(i).MirroredPosition
                     FOR j = -8 TO 8
-                        BlockLines = j + _CEIL(RND(j) * 6)
+                        BlockLines = BlockJitter(j)
                         LINE (x + BlockLines, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 1.5, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 3, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
@@ -759,7 +940,7 @@ SUB MoveIceBlocks
             CASE MOVINGBLOCK
                 'Draw normal blocks
                 FOR j = -8 TO 8
-                    BlockLines = j + _CEIL(RND(j) * 6)
+                    BlockLines = BlockJitter(j)
                     LINE (x + BlockLines + SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 1.5 - SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                     LINE (x + BlockLines + HeroWidth * 3 + SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
@@ -782,7 +963,7 @@ SUB MoveIceBlocks
                 IF IceRow(i).MirroredPosition THEN
                     x = IceRow(i).MirroredPosition
                     FOR j = -8 TO 8
-                        BlockLines = j + _CEIL(RND(j) * 6)
+                        BlockLines = BlockJitter(j)
                         LINE (x + BlockLines + SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 1.5 - SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
                         LINE (x + BlockLines + HeroWidth * 3 + SpaceBetween, IceRows(i) - j)-STEP(HeroWidth, 0), ThisRowColor
@@ -798,7 +979,10 @@ END SUB
 '------------------------------------------------------------------------------
 SUB MoveCreatures
     DIM i AS INTEGER
+    DIM n AS INTEGER
     DIM X AS INTEGER
+    DIM ThisCreatureBit AS INTEGER
+    DIM ClamPaused AS _BYTE
     STATIC Floating AS SINGLE
     STATIC FloatStep AS SINGLE
 
@@ -808,20 +992,23 @@ SUB MoveCreatures
 
     'Four rows of creatures:
     FOR i = 1 TO 4
-        IF Hero.Action <> DROWNING AND Hero.Action <> FREEZING AND Hero.Action <> EATINGFISH AND NOT LevelComplete THEN
+        CreatureStep(i) = 0
+        ClamPaused = False
+
+        'Clams move in bursts: 36 frames moving, 24 frames resting
+        IF Creatures(i).Species = CLAM THEN ClamPaused = (Creatures(i).Pause >= 36)
+
+        IF NOT WorldPaused THEN
+            IF Creatures(i).Species = CLAM THEN Creatures(i).Pause = (Creatures(i).Pause + 1) MOD 60
+            IF NOT ClamPaused THEN CreatureStep(i) = CreatureSpeed * Creatures(i).Direction
+
+            'A creature holding the hero stops at the edge of the screen:
             IF Hero.Grabbed AND i = Hero.CurrentRow THEN
-                IF Creatures(i).Direction = MOVINGRIGHT THEN
-                    IF Creatures(i).X < _WIDTH(GameScreen) - CreatureWidth(Creatures(i).Species) THEN
-                        Creatures(i).X = Creatures(i).X + (Levels(PointsInThisLevel).Speed * Creatures(i).Direction) + Creatures(i).Direction
-                    END IF
-                ELSEIF Creatures(i).Direction = MOVINGLEFT THEN
-                    IF Creatures(i).X > 0 THEN
-                        Creatures(i).X = Creatures(i).X + (Levels(PointsInThisLevel).Speed * Creatures(i).Direction) + Creatures(i).Direction
-                    END IF
-                END IF
-            ELSE
-                Creatures(i).X = Creatures(i).X + (Levels(PointsInThisLevel).Speed * Creatures(i).Direction) + Creatures(i).Direction
+                IF Creatures(i).Direction = MOVINGRIGHT AND Creatures(i).X >= _WIDTH(GameScreen) - CreatureWidth(Creatures(i).Species) THEN CreatureStep(i) = 0
+                IF Creatures(i).Direction = MOVINGLEFT AND Creatures(i).X <= 0 THEN CreatureStep(i) = 0
             END IF
+
+            Creatures(i).X = Creatures(i).X + CreatureStep(i)
 
             Floating = Floating + FloatStep
             IF Floating > HeroHeight / 4 THEN FloatStep = -.1
@@ -847,59 +1034,85 @@ SUB MoveCreatures
         'we'll generate a new one:
         IF Creatures(i).Species = 0 THEN MakeCreature i
 
-        X = Creatures(i).X
-
-        'IF X < -Creatures(i).RowWidth THEN EXIT SUB
-
         SELECT CASE Creatures(i).Species
             CASE BIRD: CreatureSprite = BirdSprites(Creatures(i).Frame)
             CASE FISH: CreatureSprite = FishSprites(Creatures(i).Frame)
-            CASE CRAB: CreatureSprite = 0: text$ = "CRAB"
-            CASE CLAM: CreatureSprite = 0: text$ = "CLAM"
+            CASE CRAB: CreatureSprite = CrabSprites(Creatures(i).Frame)
+            CASE CLAM
+                'Resting clams stay shut:
+                IF ClamPaused THEN CreatureSprite = ClamSprites(1) ELSE CreatureSprite = ClamSprites(Creatures(i).Frame)
         END SELECT
 
-        'First creature in row is always drawn at the same position:
-        IF Creatures(i).State AND FIRST THEN
-            IF CreatureSprite < -1 THEN
+        'Up to three creatures per row, evenly spaced; eaten fish are skipped:
+        FOR n = 1 TO Creatures(i).Number
+            SELECT CASE n
+                CASE 1: ThisCreatureBit = FIRST
+                CASE 2: ThisCreatureBit = SECOND
+                CASE 3: ThisCreatureBit = THIRD
+            END SELECT
+            IF Creatures(i).State AND ThisCreatureBit THEN
+                X = Creatures(i).X + (CreatureWidth(Creatures(i).Species) + Creatures(i).Spacing) * (n - 1)
                 IF Creatures(i).Direction = MOVINGRIGHT THEN
                     _PUTIMAGE (X, Creatures(i).Y), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
                 ELSE
                     _PUTIMAGE (X + CreatureWidth(Creatures(i).Species), Creatures(i).Y)-STEP(-CreatureWidth(Creatures(i).Species) - 1, _HEIGHT(CreatureSprite) - 1), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
                 END IF
-            ELSE
-                LINE (X, Creatures(i).Y)-STEP(CreatureWidth(Creatures(i).Species), 8), _RGB32(255, 0, 0), BF
-                _PRINTSTRING (X, Creatures(i).Y), text$
             END IF
-        END IF
-
-        'Second creature in row (position will be affected by Creatures().Spacing):
-        IF Creatures(i).Number > 1 AND (Creatures(i).State AND SECOND) THEN
-            IF CreatureSprite < -1 THEN
-                IF Creatures(i).Direction = MOVINGRIGHT THEN
-                    _PUTIMAGE (X + CreatureWidth(Creatures(i).Species) + Creatures(i).Spacing, Creatures(i).Y), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
-                ELSE
-                    _PUTIMAGE (X + CreatureWidth(Creatures(i).Species) + Creatures(i).Spacing + CreatureWidth(Creatures(i).Species), Creatures(i).Y)-STEP(-CreatureWidth(Creatures(i).Species) - 1, _HEIGHT(CreatureSprite) - 1), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
-                END IF
-            ELSE
-                LINE (X + CreatureWidth(Creatures(i).Species) + Creatures(i).Spacing, Creatures(i).Y)-STEP(CreatureWidth(Creatures(i).Species), 8), _RGB32(255, 0, 0), BF
-                _PRINTSTRING (X + CreatureWidth(Creatures(i).Species) + Creatures(i).Spacing, Creatures(i).Y), text$
-            END IF
-        END IF
-
-        'Third creature in row (always at the same spot)
-        IF Creatures(i).Number = 3 AND (Creatures(i).State AND THIRD) THEN
-            IF CreatureSprite < -1 THEN
-                IF Creatures(i).Direction = MOVINGRIGHT THEN
-                    _PUTIMAGE (X + CreatureWidth(Creatures(i).Species) * 2 + Creatures(i).Spacing * 2, Creatures(i).Y), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
-                ELSE
-                    _PUTIMAGE (X + CreatureWidth(Creatures(i).Species) * 2 + Creatures(i).Spacing * 2 + CreatureWidth(Creatures(i).Species), Creatures(i).Y)-STEP(-CreatureWidth(Creatures(i).Species) - 1, _HEIGHT(CreatureSprite) - 1), CreatureSprite, GameScreen, (0, IIF(Creatures(i).Species <> BIRD, -Floating, 0))-STEP(_WIDTH(CreatureSprite), _HEIGHT(CreatureSprite))
-                END IF
-            ELSE
-                LINE (X + CreatureWidth(Creatures(i).Species) * 2 + Creatures(i).Spacing * 2, Creatures(i).Y)-STEP(CreatureWidth(Creatures(i).Species), 8), _RGB32(255, 0, 0), BF
-                _PRINTSTRING (X + CreatureWidth(Creatures(i).Species) * 2 + Creatures(i).Spacing * 2, Creatures(i).Y), text$
-            END IF
-        END IF
+        NEXT n
     NEXT i
+END SUB
+
+'------------------------------------------------------------------------------
+SUB MoveBear
+    'The polar bear patrols the shore and chases the hero whenever he's on it.
+    DIM HeroCenter AS SINGLE
+    DIM BearCenter AS SINGLE
+    DIM Speed AS SINGLE
+
+    IF Levels(ActualLevel).HasBear = 0 THEN EXIT SUB
+
+    IF InGame AND NOT WorldPaused AND Hero.Action <> ENTERINGIGLOO THEN
+        Speed = BearPatrolSpeed
+        IF Hero.CurrentRow = 0 THEN
+            HeroCenter = Hero.X + HeroWidth / 2
+            BearCenter = PolarBear.X + BearWidth / 2
+            IF HeroCenter < BearCenter - 4 THEN PolarBear.Direction = MOVINGLEFT
+            IF HeroCenter > BearCenter + 4 THEN PolarBear.Direction = MOVINGRIGHT
+            Speed = BearChaseSpeed
+        END IF
+
+        PolarBear.X = PolarBear.X + Speed * PolarBear.Direction
+        IF PolarBear.X < 0 THEN PolarBear.X = 0: PolarBear.Direction = MOVINGRIGHT
+        IF PolarBear.X > _WIDTH(GameScreen) - BearWidth THEN PolarBear.X = _WIDTH(GameScreen) - BearWidth: PolarBear.Direction = MOVINGLEFT
+    ELSEIF InGame AND Hero.Action = CAUGHTBYBEAR THEN
+        'Carry the hero off screen:
+        PolarBear.X = PolarBear.X + 3 * PolarBear.Direction
+    END IF
+
+    IF PolarBear.Direction = MOVINGRIGHT THEN
+        _PUTIMAGE (PolarBear.X, HeroStartRow - BearHeight), BearSprites(TimeOfDay, PolarBear.Frame), GameScreen
+    ELSE
+        _PUTIMAGE (PolarBear.X + BearWidth, HeroStartRow - BearHeight)-STEP(-BearWidth - 1, BearHeight - 1), BearSprites(TimeOfDay, PolarBear.Frame), GameScreen
+    END IF
+END SUB
+
+'------------------------------------------------------------------------------
+SUB CheckBear
+    'The bear only gets the hero while he's standing or walking on the shore.
+    'The bear sprite has a few transparent columns, so the hitbox is a little narrower.
+    IF Levels(ActualLevel).HasBear = 0 OR NOT InGame OR LevelComplete THEN EXIT SUB
+    IF Hero.CurrentRow <> 0 OR (Hero.Action <> STOPPED AND Hero.Action <> WALKING) THEN EXIT SUB
+
+    IF Hero.X + HeroWidth - 6 > PolarBear.X + 4 AND Hero.X + 6 < PolarBear.X + BearWidth - 4 THEN
+        IF DrowningSound THEN _SNDPLAYCOPY DrowningSound
+        TIMER(TempTimer) OFF
+        Hero.Frame = 4
+        Hero.Action = CAUGHTBYBEAR
+        Hero.Direction = STOPPED
+        Hero.Face = PolarBear.Direction
+        Lives = Lives - 1
+        AnimationStep = 0
+    END IF
 END SUB
 
 '------------------------------------------------------------------------------
@@ -907,7 +1120,6 @@ SUB MakeCreature (RowNumber)
     'Randomly selects a new creature from the current level's array
     DIM NewCreature AS INTEGER
 
-    RANDOMIZE TIMER
     NewCreature = _CEIL(RND * MaxLevelCreatures)
     Creatures(RowNumber).Species = ThisLevelCreatures(NewCreature)
 
@@ -944,6 +1156,7 @@ SUB MakeCreature (RowNumber)
     'Make all creatures in row visible:
     Creatures(RowNumber).State = 0 XOR FIRST XOR SECOND XOR THIRD
     Creatures(RowNumber).Frame = 1
+    Creatures(RowNumber).Pause = 0
 END SUB
 
 '------------------------------------------------------------------------------
@@ -954,11 +1167,11 @@ SUB MoveHero
         IF NOT Hero.Grabbed THEN
             Hero.X = Hero.X + Hero.Direction * 3
             IF Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
-                Hero.X = Hero.X + IceRow(Hero.CurrentRow).Direction * Levels(PointsInThisLevel).Speed
+                Hero.X = Hero.X + IceRow(Hero.CurrentRow).Direction * LevelSpeed
             END IF
         ELSE
-            IF (Hero.Action = STOPPED OR Hero.Action = WALKING) AND Hero.Action <> EATINGFISH THEN
-                Hero.X = Hero.X + Creatures(Hero.CurrentRow).Direction * Levels(PointsInThisLevel).Speed + Creatures(Hero.CurrentRow).Direction
+            IF Hero.Action = STOPPED OR Hero.Action = WALKING THEN
+                Hero.X = Hero.X + CreatureStep(Hero.CurrentRow)
             END IF
         END IF
 
@@ -1044,12 +1257,12 @@ SUB MoveHero
                     CASE 6 TO 10
                         _PUTIMAGE (Hero.X + HeroWidth, Hero.Y - HeroHeight)-STEP(-HeroWidth - 1, HeroHeight - 1), HeroFreezingSprite, GameScreen
                     CASE 40
+                        _SOURCE GameScreen
                         _FREEIMAGE HeroFreezingSprite
                         IF Lives <= -1 THEN
                             GameOver = True
                             InGame = False
                         ELSE
-                            Temperature = InitialTemperature
                             TIMER(TempTimer) ON
                             SetLevel ThisLevel
                         END IF
@@ -1061,12 +1274,32 @@ SUB MoveHero
                 ELSE
                     Hero.Action = STOPPED
                 END IF
+            CASE CAUGHTBYBEAR
+                AnimationStep = AnimationStep + 1
+                'The bear pushes the hero ahead of it until they're both off screen:
+                IF PolarBear.Direction = MOVINGRIGHT THEN
+                    Hero.X = PolarBear.X + BearWidth - 12
+                ELSE
+                    Hero.X = PolarBear.X + 12 - HeroWidth
+                END IF
+                IF AnimationStep > 90 OR PolarBear.X > _WIDTH(GameScreen) OR PolarBear.X < -BearWidth THEN
+                    IF Lives <= -1 THEN
+                        Hero.Face = STOPPED
+                        GameOver = True
+                        InGame = False
+                    ELSE
+                        TIMER(TempTimer) ON
+                        SetLevel ThisLevel
+                    END IF
+                END IF
             CASE STOPPED
                 Hero.Frame = 1
         END SELECT
 
-        IF Hero.X + HeroWidth > _WIDTH THEN Hero.X = _WIDTH - HeroWidth
-        IF Hero.X < 0 THEN Hero.X = 0
+        IF Hero.Action <> CAUGHTBYBEAR THEN
+            IF Hero.X + HeroWidth > _WIDTH THEN Hero.X = _WIDTH - HeroWidth
+            IF Hero.X < 0 THEN Hero.X = 0
+        END IF
     END IF
 
     SELECT CASE Hero.Face
@@ -1081,8 +1314,8 @@ END SUB
 SUB CheckLanding
     'Check to see if the hero landed safely:
     DIM i AS INTEGER
-    DIM X AS INTEGER
-    DIM m.X AS INTEGER
+    DIM X AS SINGLE
+    DIM m.X AS SINGLE
 
     IF Hero.CurrentRow > 0 AND (Hero.Action = STOPPED OR Hero.Action = WALKING) THEN
         Safe = False
@@ -1092,47 +1325,47 @@ SUB CheckLanding
             CASE SINGLEBLOCK
                 IF Hero.X + HeroWidth > X AND Hero.X < X + HeroWidth * 2 THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X AND Hero.X < m.X + HeroWidth * 2 THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X <> 0 AND Hero.X < m.X + HeroWidth * 2 THEN
                     Safe = True
                 ELSEIF Hero.X + HeroWidth > X + HeroWidth * 3.5 AND Hero.X < X + HeroWidth * 3.5 + HeroWidth * 2 THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + HeroWidth * 3.5 AND Hero.X < m.X + HeroWidth * 3.5 + HeroWidth * 2 THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 3.5 AND Hero.X < m.X + HeroWidth * 3.5 + HeroWidth * 2 THEN
                     Safe = True
                 ELSEIF Hero.X + HeroWidth > X + HeroWidth * 7 AND Hero.X < X + HeroWidth * 7 + HeroWidth * 2 THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + HeroWidth * 7 AND Hero.X < m.X + HeroWidth * 7 + HeroWidth * 2 THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 7 AND Hero.X < m.X + HeroWidth * 7 + HeroWidth * 2 THEN
                     Safe = True
                 END IF
             CASE DOUBLEBLOCK
                 IF Hero.X + HeroWidth > X AND Hero.X < X + RowWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X AND Hero.X < m.X + RowWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X <> 0 AND Hero.X < m.X + RowWidth THEN
                     Safe = True
                 END IF
             CASE MOVINGBLOCK
-                IF Hero.X + HeroWidth > X + BlockLines + SpaceBetween AND Hero.X < X + BlockLines + SpaceBetween + HeroWidth THEN
+                IF Hero.X + HeroWidth > X + SpaceBetween AND Hero.X < X + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + SpaceBetween AND Hero.X < m.X + BlockLines + SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + SpaceBetween AND Hero.X < m.X + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF Hero.X + HeroWidth > X + BlockLines + HeroWidth * 1.5 - SpaceBetween AND Hero.X < X + BlockLines + HeroWidth * 1.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF Hero.X + HeroWidth > X + HeroWidth * 1.5 - SpaceBetween AND Hero.X < X + HeroWidth * 1.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + HeroWidth * 1.5 - SpaceBetween AND Hero.X < m.X + BlockLines + HeroWidth * 1.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 1.5 - SpaceBetween AND Hero.X < m.X + HeroWidth * 1.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF Hero.X + HeroWidth > X + BlockLines + HeroWidth * 3 + SpaceBetween AND Hero.X < X + BlockLines + HeroWidth * 3 + SpaceBetween + HeroWidth THEN
+                ELSEIF Hero.X + HeroWidth > X + HeroWidth * 3 + SpaceBetween AND Hero.X < X + HeroWidth * 3 + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + HeroWidth * 3 + SpaceBetween AND Hero.X < m.X + BlockLines + HeroWidth * 3 + SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 3 + SpaceBetween AND Hero.X < m.X + HeroWidth * 3 + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF Hero.X + HeroWidth > X + BlockLines + HeroWidth * 4.5 - SpaceBetween AND Hero.X < X + BlockLines + HeroWidth * 4.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF Hero.X + HeroWidth > X + HeroWidth * 4.5 - SpaceBetween AND Hero.X < X + HeroWidth * 4.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + HeroWidth * 4.5 - SpaceBetween AND Hero.X < m.X + BlockLines + HeroWidth * 4.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 4.5 - SpaceBetween AND Hero.X < m.X + HeroWidth * 4.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF Hero.X + HeroWidth > X + BlockLines + HeroWidth * 6 + SpaceBetween AND Hero.X < X + BlockLines + HeroWidth * 6 + SpaceBetween + HeroWidth THEN
+                ELSEIF Hero.X + HeroWidth > X + HeroWidth * 6 + SpaceBetween AND Hero.X < X + HeroWidth * 6 + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + HeroWidth * 6 + SpaceBetween AND Hero.X < m.X + BlockLines + HeroWidth * 6 + SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 6 + SpaceBetween AND Hero.X < m.X + HeroWidth * 6 + SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF Hero.X + HeroWidth > X + BlockLines + HeroWidth * 7.5 - SpaceBetween AND Hero.X < X + BlockLines + HeroWidth * 7.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF Hero.X + HeroWidth > X + HeroWidth * 7.5 - SpaceBetween AND Hero.X < X + HeroWidth * 7.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
-                ELSEIF m.X AND Hero.X + HeroWidth > m.X + BlockLines + HeroWidth * 7.5 - SpaceBetween AND Hero.X < m.X + BlockLines + HeroWidth * 7.5 - SpaceBetween + HeroWidth THEN
+                ELSEIF m.X <> 0 AND Hero.X + HeroWidth > m.X + HeroWidth * 7.5 - SpaceBetween AND Hero.X < m.X + HeroWidth * 7.5 - SpaceBetween + HeroWidth THEN
                     Safe = True
                 END IF
         END SELECT
@@ -1170,7 +1403,7 @@ SUB CheckCreatures
     DIM WhichCreature AS _BYTE
     DIM EvalCreatures(1 TO 3) AS INTEGER
 
-    IF Hero.Grabbed OR Hero.CurrentRow = 0 OR (Hero.Action = JUMPINGUP OR Hero.Action = JUMPINGDOWN OR Hero.Action = DROWNING OR Hero.Action = FREEZING) THEN EXIT SUB
+    IF Hero.Grabbed OR Hero.CurrentRow = 0 OR (Hero.Action = JUMPINGUP OR Hero.Action = JUMPINGDOWN OR Hero.Action = DROWNING OR Hero.Action = FREEZING OR Hero.Action = CAUGHTBYBEAR) THEN EXIT SUB
     i = Hero.CurrentRow
 
     IF Creatures(i).Species = 0 THEN EXIT SUB
@@ -1266,7 +1499,7 @@ SUB ReadKeyboard
     END SELECT
 
     'Check if a movement must be processed:
-    IF NOT InGame OR Hero.Action = DROWNING OR Hero.Action = FREEZING OR Hero.Action = ENTERINGIGLOO OR Hero.Action = EATINGFISH THEN EXIT SUB
+    IF NOT InGame OR Hero.Action = DROWNING OR Hero.Action = FREEZING OR Hero.Action = ENTERINGIGLOO OR Hero.Action = EATINGFISH OR Hero.Action = CAUGHTBYBEAR THEN EXIT SUB
 
     IF Hero.Action = WALKING THEN Hero.Action = STOPPED: Hero.Direction = Hero.Action
 
@@ -1343,10 +1576,10 @@ SUB UpdateFrames
     STATIC CreditCount AS INTEGER
     STATIC CreditUpdate AS INTEGER
     STATIC BlockCount AS SINGLE
+    STATIC BearStep AS INTEGER
 
     AuroraCount = AuroraCount + 1
     IF AuroraCount > 3 THEN
-        RANDOMIZE TIMER
         AuroraCount = 0
         PrevDest = _DEST
         _DEST ThisAurora
@@ -1393,7 +1626,15 @@ SUB UpdateFrames
         IF Hero.Frame = 1 THEN Hero.Frame = 2 ELSE Hero.Frame = 1
     END IF
 
-    IF InGame AND NOT LevelComplete AND (Hero.Action <> DROWNING AND Hero.Action <> FREEZING AND Hero.Action <> EATINGFISH) THEN
+    IF InGame AND (NOT WorldPaused OR Hero.Action = CAUGHTBYBEAR) THEN
+        BearStep = BearStep + 1
+        IF BearStep > 1 THEN
+            BearStep = 0
+            IF PolarBear.Frame = 1 THEN PolarBear.Frame = 2 ELSE PolarBear.Frame = 1
+        END IF
+    END IF
+
+    IF InGame AND NOT WorldPaused THEN
         FOR i = 1 TO 4
             IF Creatures(i).Frame = 1 THEN Creatures(i).Frame = 2 ELSE Creatures(i).Frame = 1
         NEXT i
@@ -1401,7 +1642,7 @@ SUB UpdateFrames
 
     IF IceRow(1).State AND IceRow(2).State AND IceRow(3).State AND IceRow(4).State AND IglooPieces < 16 THEN
         IF NOT LevelComplete THEN
-            IF TIMER - RestoreRowsTimer > .3 THEN
+            IF Elapsed(RestoreRowsTimer) > .3 THEN
                 FOR i = 1 TO 4
                     IceRow(i).State = False
                 NEXT i
@@ -1409,7 +1650,7 @@ SUB UpdateFrames
         END IF
     END IF
 
-    IF InGame AND Levels(ActualLevel).BlockType = MOVINGBLOCK AND (Hero.Action <> DROWNING AND Hero.Action <> FREEZING AND Hero.Action <> EATINGFISH) AND NOT LevelComplete THEN
+    IF InGame AND Levels(ActualLevel).BlockType = MOVINGBLOCK AND NOT WorldPaused THEN
         BlockCount = BlockCount + .5
         IF BlockCount > MaxSpaceBetween THEN BlockCount = -MaxSpaceBetween
         SELECT CASE BlockCount
@@ -1435,6 +1676,8 @@ SUB SetLevel (TargetLevel)
             Temperature = InitialTemperature
             IglooPieces = 0
             NextGoal = ONEUPGOAL
+            'GameBG doesn't exist yet on the very first call:
+            IF GameBG THEN DrawScenery
         CASE NEXTLEVEL
             LevelComplete = False
             ThisLevel = ThisLevel + 1
@@ -1444,6 +1687,9 @@ SUB SetLevel (TargetLevel)
                 IF TimeOfDay = DAY THEN TimeOfDay = NIGHT ELSE TimeOfDay = DAY
                 DrawScenery
             END IF
+        CASE ELSE
+            'Retrying the same level after losing a life:
+            Temperature = InitialTemperature
     END SELECT
 
     'Set hero's initial position and state:
@@ -1456,14 +1702,29 @@ SUB SetLevel (TargetLevel)
     Hero.Frame = 1
     Hero.Grabbed = False
 
-    'Levels only have defined conditions up to level 9. After that, conditions are random.
-    ActualLevel = ThisLevel
-    PointsInThisLevel = ThisLevel
-    IF ThisLevel > UBOUND(Levels) THEN
-        RANDOMIZE TIMER
-        ActualLevel = _CEIL(RND * UBOUND(Levels))
-        PointsInThisLevel = UBOUND(Levels)
+    'Levels only have defined conditions up to UBOUND(Levels). After that, conditions
+    'are random and speed keeps increasing. Only rolled when a level starts, so
+    'losing a life doesn't change the current level's layout.
+    IF TargetLevel = GAMESTART OR TargetLevel = NEXTLEVEL THEN
+        IF ThisLevel <= UBOUND(Levels) THEN
+            ActualLevel = ThisLevel
+            PointsInThisLevel = ThisLevel
+            LevelSpeed = Levels(ThisLevel).Speed
+        ELSE
+            ActualLevel = _CEIL(RND * UBOUND(Levels))
+            PointsInThisLevel = UBOUND(Levels)
+            LevelSpeed = Levels(UBOUND(Levels)).Speed + (ThisLevel - UBOUND(Levels)) * .1
+            IF LevelSpeed > MaxLevelSpeed THEN LevelSpeed = MaxLevelSpeed
+        END IF
+        'Creatures are always a bit faster than the ice they swim/fly past:
+        CreatureSpeed = LevelSpeed + .5
     END IF
+
+    'The bear (when there is one) starts off on the right side of the shore,
+    'away from the hero:
+    PolarBear.X = 340
+    PolarBear.Direction = MOVINGLEFT
+    PolarBear.Frame = 1
 
     'Erase existing creatures and fills an array with the ones allowed:
     ERASE Creatures
@@ -3043,6 +3304,7 @@ SUB RestoreData
         READ Levels(i).Speed
         READ Levels(i).BlockType
         READ Levels(i).CreaturesAllowed
+        READ Levels(i).HasBear
     NEXT i
 
     RESTORE CreaturesDATA
@@ -3050,6 +3312,14 @@ SUB RestoreData
     READ CreatureWidth(BIRD)
     READ CreatureWidth(CRAB)
     READ CreatureWidth(CLAM)
+
+    'Jagged ice block edges. RND with a negative argument reseeds the generator,
+    'so this always produces the same shape; it's computed once here instead of
+    'every frame, then the generator is properly seeded for the rest of the game.
+    FOR i = -8 TO 8
+        BlockJitter(i) = i + _CEIL(RND(i) * 6)
+    NEXT i
+    RANDOMIZE TIMER
 END SUB
 
 '------------------------------------------------------------------------------
@@ -3059,6 +3329,7 @@ SUB SpritesSetup
     DIM ColorsInPalette AS INTEGER
     REDIM SpritePalette(0) AS _UNSIGNED LONG
     DIM i AS INTEGER
+    DIM t AS INTEGER
 
     'Hero
     FOR i = 1 TO 4
@@ -3108,6 +3379,48 @@ SUB SpritesSetup
 
     RESTORE Fish1: LoadSprite FishSprites(1), 30, 15, SpritePalette()
     RESTORE Fish2: LoadSprite FishSprites(2), 30, 15, SpritePalette()
+
+    'Crab
+    FOR i = 1 TO 2
+        CrabSprites(i) = _NEWIMAGE(30, 16, 32)
+    NEXT i
+
+    RESTORE CrabPalette
+    READ ColorsInPalette
+    REDIM SpritePalette(1 TO ColorsInPalette) AS _UNSIGNED LONG
+    FOR i = 1 TO ColorsInPalette
+        READ SpritePalette(i)
+    NEXT i
+
+    RESTORE Crab1: LoadSprite CrabSprites(1), 30, 16, SpritePalette()
+    RESTORE Crab2: LoadSprite CrabSprites(2), 30, 16, SpritePalette()
+
+    'Clam
+    FOR i = 1 TO 2
+        ClamSprites(i) = _NEWIMAGE(30, 18, 32)
+    NEXT i
+
+    RESTORE ClamPalette
+    READ ColorsInPalette
+    REDIM SpritePalette(1 TO ColorsInPalette) AS _UNSIGNED LONG
+    FOR i = 1 TO ColorsInPalette
+        READ SpritePalette(i)
+    NEXT i
+
+    RESTORE Clam1: LoadSprite ClamSprites(1), 30, 18, SpritePalette()
+    RESTORE Clam2: LoadSprite ClamSprites(2), 30, 18, SpritePalette()
+
+    'Bear: fur color comes from the scenery palette, so there's a day and a night version
+    REDIM SpritePalette(1 TO 2) AS _UNSIGNED LONG
+    SpritePalette(1) = 0
+    FOR t = DAY TO NIGHT
+        SpritePalette(2) = SceneryPalette(t, BEAR)
+        FOR i = 1 TO 2
+            BearSprites(t, i) = _NEWIMAGE(BearWidth, BearHeight, 32)
+        NEXT i
+        RESTORE Bear1: LoadSprite BearSprites(t, 1), BearWidth, BearHeight, SpritePalette()
+        RESTORE Bear2: LoadSprite BearSprites(t, 2), BearWidth, BearHeight, SpritePalette()
+    NEXT t
 END SUB
 
 '------------------------------------------------------------------------------
@@ -3165,7 +3478,7 @@ SUB CalculateScores
         IF IglooPieces = 0 AND Temperature = 0 THEN SetLevel NEXTLEVEL
     END IF
 
-    IF Score > NextGoal THEN
+    IF Score >= NextGoal THEN
         NextGoal = NextGoal + ONEUPGOAL
         IF Lives < 9 THEN Lives = Lives + 1
     END IF
@@ -3216,5 +3529,24 @@ END SUB
 
 FUNCTION IIF (Condition, IfTrue, IfFalse)
     IF Condition THEN IIF = IfTrue ELSE IIF = IfFalse
+END FUNCTION
+
+FUNCTION WorldPaused%
+    'Ice, creatures and the bear freeze in place while the hero is dying,
+    'eating a fish or the level-end score is being counted.
+    SELECT CASE Hero.Action
+        CASE DROWNING, FREEZING, EATINGFISH, CAUGHTBYBEAR
+            WorldPaused% = True
+        CASE ELSE
+            WorldPaused% = LevelComplete
+    END SELECT
+END FUNCTION
+
+FUNCTION Elapsed! (Since AS SINGLE)
+    'Seconds since Since, accounting for TIMER wrapping around at midnight
+    DIM Diff AS SINGLE
+    Diff = TIMER - Since
+    IF Diff < 0 THEN Diff = Diff + 86400
+    Elapsed! = Diff
 END FUNCTION
 
